@@ -4035,6 +4035,80 @@ def _load_gpkg_and_link(s, table_hint="osm_multipolygons"):
     return True, len(osm_features), table, id_col, osm_features, {"pk_col": pk_col, "geom_col": geom_col}
 
 
+def _link_gpkg_to_citygml(s):
+    """
+    Link GPKG features to CityGML buildings using centroid matching.
+    
+    Returns:
+        tuple: (ok, linked_count, confidences, no_match_reasons, tiles_count, samples)
+    """
+    try:
+        from .pipeline.linking.linking_cache import ensure_link_dbs
+        from .utils.logging_system import log_info, log_warn, log_error
+        
+        gpkg_path = getattr(s, "gpkg_path", "").strip()
+        citygml_folder = getattr(s, "citygml_folder", "").strip()
+        output_dir = getattr(s, "output_dir", "").strip()
+        
+        if not gpkg_path or not os.path.isfile(gpkg_path):
+            log_error("[Link] No valid GPKG path specified")
+            return False, 0, [], [], 0, []
+        
+        if not citygml_folder or not os.path.isdir(citygml_folder):
+            log_error("[Link] No valid CityGML folder specified")
+            return False, 0, [], [], 0, []
+        
+        # Run linking pipeline
+        log_info(f"[Link] Linking GPKG → CityGML\n  GPKG: {gpkg_path}\n  GML: {citygml_folder}")
+        osm_db, gml_db, link_db = ensure_link_dbs(gpkg_path, citygml_folder, output_dir)
+        
+        # Store link DB path in settings
+        s.links_db_path = str(link_db)
+        
+        # Count linked buildings from link database
+        import sqlite3
+        linked_count = 0
+        confidences = []
+        tiles_count = 0
+        
+        if link_db.exists():
+            try:
+                conn = sqlite3.connect(str(link_db))
+                cur = conn.cursor()
+                
+                # Count links with confidence scores
+                cur.execute("SELECT COUNT(*), AVG(COALESCE(confidence, 0.0)) FROM gml_osm_links")
+                row = cur.fetchone()
+                linked_count = row[0] if row else 0
+                avg_conf = row[1] if row and row[1] else 0.0
+                
+                # Get confidence distribution
+                cur.execute("SELECT confidence FROM gml_osm_links WHERE confidence IS NOT NULL")
+                confidences = [r[0] for r in cur.fetchall()]
+                
+                # Count distinct tiles
+                cur.execute("SELECT COUNT(DISTINCT source_tile) FROM gml_centroids")
+                tiles_row = cur.fetchone()
+                tiles_count = tiles_row[0] if tiles_row else 0
+                
+                conn.close()
+                log_info(f"[Link] Linked {linked_count} buildings across {tiles_count} tiles (avg confidence: {avg_conf:.3f})")
+            except Exception as ex:
+                log_warn(f"[Link] Could not query link statistics: {ex}")
+        
+        # Update settings
+        s.step2_linked_objects = linked_count
+        
+        return True, linked_count, confidences, [], tiles_count, []
+        
+    except Exception as ex:
+        from .utils.logging_system import log_error
+        log_error(f"[Link] Linking failed: {ex}")
+        import traceback
+        traceback.print_exc()
+        return False, 0, [], [], 0, []
+
+
 # ============================================================================
 # TERRAIN CACHE MECHANISM — Avoid rebuilding expensive DEM terrain
 # ============================================================================

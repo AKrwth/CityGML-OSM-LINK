@@ -32,7 +32,9 @@ from ...utils.logging_system import log_info, log_warn, log_error
 # Constants
 CITYGML_COLLECTION = "CITYGML_TILES"
 TERRAIN_COLLECTION = "M1DC_TERRAIN_DGM"
-TERRAIN_OBJECT = "dem_merged"
+# DEPRECATED: TERRAIN_OBJECT = "dem_merged"  # Legacy fallback only
+TERRAIN_OBJECT_LEGACY_DEM = "dem_merged"
+TERRAIN_OBJECT_LEGACY_RGB = "rgb_merged"
 
 # Thresholds
 GLOBAL_OFFSET_THRESHOLD = 0.5  # meters - if std < 0.5m, use global offset
@@ -58,6 +60,49 @@ def get_building_base_z(obj) -> Optional[float]:
         return min(z_values) if z_values else None
     except Exception:
         return None
+
+
+def get_terrain_object():
+    """
+    Get terrain object with robust fallback detection strategy.
+    
+    Priority (in order):
+    1. Any object with custom property m1dc_role="terrain"
+    2. First mesh in TERRAIN collection (if exists)
+    3. Legacy names: dem_merged (preferred) or rgb_merged (fallback)
+    4. None if not found
+
+    Returns:
+        Blender Object (MESH) or None
+    """
+    # Strategy 1: Property-based detection (m1dc_role="terrain")
+    for obj in bpy.data.objects:
+        if obj.type == 'MESH' and obj.get("m1dc_role") == "terrain":
+            log_info(f"[Z-Align] Terrain found via m1dc_role property: {obj.name}")
+            return obj
+    
+    # Strategy 2: TERRAIN collection
+    terrain_col = bpy.data.collections.get(TERRAIN_COLLECTION)
+    if terrain_col:
+        for obj in terrain_col.objects:
+            if obj.type == 'MESH':
+                log_info(f"[Z-Align] Terrain found in TERRAIN collection: {obj.name}")
+                return obj
+    
+    # Strategy 3: Legacy hardcoded names
+    terrain = bpy.data.objects.get(TERRAIN_OBJECT_LEGACY_DEM)
+    if terrain:
+        log_info(f"[Z-Align] Terrain found via legacy DEM name: {terrain.name}")
+        return terrain
+
+    terrain = bpy.data.objects.get(TERRAIN_OBJECT_LEGACY_RGB)
+    if terrain:
+        log_info(f"[Z-Align] Terrain found via legacy RGB name: {terrain.name}")
+        return terrain
+    
+    # Not found
+    log_warn(f"[Z-Align] Terrain not found (searched: m1dc_role='terrain', TERRAIN collection, legacy names)")
+    return None
 
 
 def raycast_terrain_at_xy(terrain_obj, x: float, y: float, max_height: float = 10000.0) -> Optional[float]:
@@ -364,9 +409,9 @@ def align_citygml_to_terrain_z(
         log_error(msg)
         return False, msg, {}
 
-    terrain_obj = bpy.data.objects.get(TERRAIN_OBJECT)
+    terrain_obj = get_terrain_object()
     if not terrain_obj:
-        msg = f"[Z-Align] Terrain object not found: {TERRAIN_OBJECT}"
+        msg = "[Z-Align] Terrain object not found (checked: m1dc_role property, TERRAIN collection, legacy names dem_merged/rgb_merged)"
         log_error(msg)
         return False, msg, {}
 

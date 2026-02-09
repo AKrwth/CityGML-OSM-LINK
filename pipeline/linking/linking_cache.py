@@ -190,6 +190,21 @@ def _build_gml_from_scene(out_db: Path) -> int:
     if not _HAVE_BPY or iter_citygml_buildings is None or local_to_crs_xy is None:
         raise RuntimeError("Blender context not available for GML centroid fallback")
 
+    # Import norm_source_tile here to normalize keys
+    try:
+        from ...ops import norm_source_tile
+    except ImportError:
+        def norm_source_tile(v):
+            """Fallback normalization: extract stem without extension."""
+            if not v:
+                return ""
+            s = str(v).strip()
+            if '/' in s or '\\' in s:
+                s = s.split('/')[-1].split('\\')[-1]
+            if '.' in s:
+                s = '.'.join(s.split('.')[:-1])
+            return s
+
     objs = bpy.data.collections.get("CITYGML_TILES")
     candidates = list(objs.objects) if objs else [o for o in bpy.data.objects if o.type == "MESH"]
     rows = []
@@ -200,7 +215,8 @@ def _build_gml_from_scene(out_db: Path) -> int:
         if not aggr:
             continue
         for key, data in aggr.items():
-            source_tile, bidx = key
+            source_tile_raw, bidx = key
+            source_tile = norm_source_tile(source_tile_raw)  # NORMALIZE KEY (C-fix)
             centroid_xy = data.get("centroid_xy")
             bbox_xy = data.get("bbox_xy")
             if not centroid_xy:

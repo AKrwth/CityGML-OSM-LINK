@@ -161,16 +161,45 @@ def is_anisotropic_scale(scale, tol=ANISOTROPIC_TOLERANCE) -> bool:
 
 def get_terrain_object():
     """
-    Get terrain object (dem_merged preferred, rgb_merged fallback).
+    Get terrain object with fallback detection strategy.
+    
+    Priority (in order):
+    1. Any object with custom property m1dc_role="terrain"
+    2. First mesh in TERRAIN collection (if exists)
+    3. Legacy names: dem_merged (preferred) or rgb_merged (fallback)
+    4. None if not found
 
     Returns:
         Blender Object or None
     """
+    # Strategy 1: Property-based detection (m1dc_role="terrain")
+    for obj in bpy.data.objects:
+        if obj.type == 'MESH' and obj.get("m1dc_role") == "terrain":
+            log_info(f"[VALIDATION] Terrain found via m1dc_role property: {obj.name}")
+            return obj
+    
+    # Strategy 2: TERRAIN collection
+    terrain_col = bpy.data.collections.get("TERRAIN")
+    if terrain_col:
+        for obj in terrain_col.objects:
+            if obj.type == 'MESH':
+                log_info(f"[VALIDATION] Terrain found in TERRAIN collection: {obj.name}")
+                return obj
+    
+    # Strategy 3: Legacy hardcoded names
     terrain = bpy.data.objects.get(TERRAIN_DEM_NAME)
     if terrain:
+        log_info(f"[VALIDATION] Terrain found via legacy name: {terrain.name}")
         return terrain
 
-    return bpy.data.objects.get(TERRAIN_RGB_NAME)
+    terrain = bpy.data.objects.get(TERRAIN_RGB_NAME)
+    if terrain:
+        log_info(f"[VALIDATION] Terrain found via legacy RGB name: {terrain.name}")
+        return terrain
+    
+    # Not found
+    log_warn(f"[VALIDATION] Terrain not found (searched: m1dc_role='terrain', TERRAIN collection, legacy names)")
+    return None
 
 
 def collect_gml_objects() -> List:

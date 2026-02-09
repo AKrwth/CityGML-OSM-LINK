@@ -50,14 +50,9 @@ class M1DC_OT_LinkCityGMLtoOSM(Operator):
             return {"CANCELLED"}
 
         try:
-            # Import linking function from ops.py (temporary until fully refactored)
-            # This will be replaced with proper modular imports later
-            import ops as ops_module
-            _link_gpkg_to_citygml = getattr(ops_module, '_link_gpkg_to_citygml', None)
-            
-            if not _link_gpkg_to_citygml:
-                self.report({"ERROR"}, "Link function not available")
-                return {"CANCELLED"}
+            # Import linking function from ops.py
+            from ... import ops
+            _link_gpkg_to_citygml = ops._link_gpkg_to_citygml
             
             log_info("Starting explicit linking: CityGML ↔ OSM")
             ok2, linked, confidences, no_match_reasons, tiles_count, samples = _link_gpkg_to_citygml(s)

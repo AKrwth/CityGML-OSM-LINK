@@ -18,11 +18,9 @@ try:
     _do_validation = ops._do_validation
     _run_citygml_import = ops._run_citygml_import
     _link_gpkg_to_citygml = ops._link_gpkg_to_citygml
-    _materialize_face_attributes = ops._materialize_face_attributes
     _update_world_origin_status = ops._update_world_origin_status
     infer_world_origin_from_citygml_tiles = ops.infer_world_origin_from_citygml_tiles
     _import_basemap_pipeline = ops._import_basemap_pipeline
-    write_m1dc_report_txt = ops.write_m1dc_report_txt
 except ImportError:
     # Fallback for direct execution
     import sys
@@ -32,11 +30,26 @@ except ImportError:
     _do_validation = ops._do_validation
     _run_citygml_import = ops._run_citygml_import
     _link_gpkg_to_citygml = ops._link_gpkg_to_citygml
-    _materialize_face_attributes = ops._materialize_face_attributes
     _update_world_origin_status = ops._update_world_origin_status
     infer_world_origin_from_citygml_tiles = ops.infer_world_origin_from_citygml_tiles
     _import_basemap_pipeline = ops._import_basemap_pipeline
-    write_m1dc_report_txt = ops.write_m1dc_report_txt
+
+# Import from correct modules
+try:
+    from ...pipeline.diagnostics.diagnostic import write_m1dc_report_txt
+except ImportError:
+    from pipeline.diagnostics.diagnostic import write_m1dc_report_txt
+
+# Materialization stub (calls MaterializeLinks operator)
+def _materialize_face_attributes(context, s, include_features=True):
+    """Stub: materialize face attributes by invoking MaterializeLinks operator."""
+    try:
+        from ...utils.logging_system import log_info
+        log_info("[Materialize] Invoking MaterializeLinks operator...")
+        bpy.ops.m1dc.materialize_links()
+    except Exception as ex:
+        from ...utils.logging_system import log_error
+        log_error(f"[Materialize] Failed: {ex}")
 
 # Import utilities
 try:
