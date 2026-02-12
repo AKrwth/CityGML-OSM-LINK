@@ -1,9 +1,9 @@
 # BlenderGIS Urban Data Pipeline
 <p align="center">
-  <img src="docs/images/graphical_abstract.png" width="700">
+  <img src="docs/images/CityGML-OSM-LINK.png" width="700">
 </p>
 
-![Graphical Abstract](docs/images/graphical_abstract.png)
+![Graphical Abstract](docs/images/CityGML-OSM-LINK.png)
 
 ## Overview
 
