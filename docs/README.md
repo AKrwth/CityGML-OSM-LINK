@@ -1,5 +1,11 @@
 # BlenderGIS Urban Data Pipeline
 
+<p align="center">
+  <img src="docs/images/CityGML-OSM-LINK.png" width="700">
+</p>
+
+![Graphical Abstract](docs/images/CityGML-OSM-LINK.png)
+
 ## Overview
 
 This Blender add-on implements a multi-phase pipeline for importing and integrating urban geospatial data. It combines terrain elevation data, building geometries from CityGML, and infrastructure features from OpenStreetMap into a unified 3D scene.
