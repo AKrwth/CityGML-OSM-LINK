@@ -1,4 +1,5 @@
 # BlenderGIS Urban Data Pipeline
+![Graphical Abstract](docs/images/graphical_abstract.png)
 
 ## Overview
 
