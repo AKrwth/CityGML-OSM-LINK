@@ -48,7 +48,20 @@ desktop.ini
 .claude/
 
 # Local audit outputs / evidence packs (keep local or move to separate evidence repo)
-docs/
+# Ignore everything in docs/ by default...
+docs/**
+
+# ...but keep the public documentation entry points:
+!docs/README.md
+!docs/ARCHITECTURE.md
+!docs/Images/
+!docs/Images/**
+
+# Explicitly keep these out of the repo
+docs/ENVIRONMENT.md
+docs/DOCS_INDEX.md
+docs/legacy/
+docs/legacy/**
 
 
 # ============================================================================
