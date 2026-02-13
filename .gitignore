@@ -40,6 +40,7 @@ desktop.ini
 *.swo
 *~
 
+
 # ============================================================================
 # Phase 11.6: Repo publishing hygiene (keep local, do NOT push to GitHub)
 # ============================================================================
@@ -47,21 +48,17 @@ desktop.ini
 # Agent/tool config (local machine state)
 .claude/
 
-# Local audit outputs / evidence packs (keep local or move to separate evidence repo)
-# Ignore everything in docs/ by default...
+# Docs publishing policy:
+# Ignore everything under /docs by default, but publish only:
+# - docs/README.md
+# - docs/ARCHITECTURE.md
+# - docs/Images/**
 docs/**
 
-# ...but keep the public documentation entry points:
 !docs/README.md
 !docs/ARCHITECTURE.md
 !docs/Images/
 !docs/Images/**
-
-# Explicitly keep these out of the repo
-docs/ENVIRONMENT.md
-docs/DOCS_INDEX.md
-docs/legacy/
-docs/legacy/**
 
 
 # ============================================================================
