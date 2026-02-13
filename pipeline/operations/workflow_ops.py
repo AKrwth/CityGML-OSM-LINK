@@ -21,11 +21,12 @@ try:
     _update_world_origin_status = ops._update_world_origin_status
     infer_world_origin_from_citygml_tiles = ops.infer_world_origin_from_citygml_tiles
     _import_basemap_pipeline = ops._import_basemap_pipeline
-except ImportError:
-    # Fallback for direct execution
+except ImportError as _imp_err:
+    # Fallback for direct execution — should not be reached when Blender loads the add-on
     import sys
     sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-    import ops
+    import importlib
+    ops = importlib.import_module("ops")
     _settings = ops._settings
     _do_validation = ops._do_validation
     _run_citygml_import = ops._run_citygml_import
@@ -33,6 +34,7 @@ except ImportError:
     _update_world_origin_status = ops._update_world_origin_status
     infer_world_origin_from_citygml_tiles = ops.infer_world_origin_from_citygml_tiles
     _import_basemap_pipeline = ops._import_basemap_pipeline
+    print(f"[workflow_ops] WARNING: relative import failed ({_imp_err}), using sys.path fallback")
 
 # Import from correct modules
 try:
@@ -210,11 +212,13 @@ class M1DC_OT_RunPipeline(Operator):
                     # TASK A: Diagnostic log with meter verification
                     min_e, min_n, max_e, max_n = get_world_origin_minmax()
                     log_info(f"[Phase0] ✓ WORLD_ORIGIN inferred in METERS: min_e={min_e:.0f}m, min_n={min_n:.0f}m, max_e={max_e:.0f}m, max_n={max_n:.0f}m, CRS=EPSG:25832")
-                    # Sanity check: EPSG:25832 Cologne area should be ~ 32e6 / 5.6e6
-                    if min_e and abs(min_e - 32290000) < 1e7 and min_n and abs(min_n - 5626000) < 1e7:
-                        log_info(f"[Phase0] ✓ sanity: magnitude consistent with EPSG:25832 Cologne region (~1e7)")
+                    # Sanity check: EPSG:25832 Easting ~2e5..8e5, Northing ~5.2e6..6.1e6
+                    e_ok = min_e and (1e5 < min_e < 9e5)
+                    n_ok = min_n and (5.0e6 < min_n < 6.2e6)
+                    if e_ok and n_ok:
+                        log_info(f"[Phase0] ✓ sanity: magnitude consistent with EPSG:25832 (E~{min_e:.0f}, N~{min_n:.0f})")
                     else:
-                        log_warn(f"[Phase0] ⚠ sanity: values ~{min_e:.0e}/{min_n:.0e} may be in wrong units (expected ~3.2e7/5.6e6)")
+                        log_warn(f"[Phase0] ⚠ sanity: values E={min_e:.0f}/N={min_n:.0f} outside typical EPSG:25832 range (E:1e5-9e5, N:5e6-6.2e6)")
                     log_info(f"[Pipeline] ✓ WORLD_ORIGIN inferred: now locked")
                 else:
                     log_warn(f"[Pipeline] Could not infer WORLD_ORIGIN from tile filenames")
@@ -247,11 +251,36 @@ class M1DC_OT_RunPipeline(Operator):
         if obj_artifact_dir and os.path.isdir(obj_artifact_dir):
             # OBJ artifact import logic
             log_info("[Pipeline] Terrain import via OBJ artifact (dedicated folder)")
-            log_info(f"[Terrain] Mode: OBJ Artifact")
-            # Actual import implementation delegated to _import_basemap_pipeline or inline OBJ import
-            # This section is too large to reproduce in full here - see ops.py lines 8560-8850
-            step1_msg = "Step1 Terrain: OBJ artifact (implementation in ops.py)"
-            ok3 = False  # Placeholder
+            log_info(f"[Terrain] Mode: OBJ Artifact | Path: {obj_artifact_dir}")
+            try:
+                from ..terrain.m1_basemap import import_basemap_obj_artifact
+                imported_objs = import_basemap_obj_artifact(obj_artifact_dir)
+                # Tag terrain objects with m1dc_role and place in TERRAIN collection
+                terrain_col = bpy.data.collections.get("TERRAIN")
+                if not terrain_col:
+                    terrain_col = bpy.data.collections.new("TERRAIN")
+                    bpy.context.scene.collection.children.link(terrain_col)
+                for obj in imported_objs:
+                    if obj.type == "MESH":
+                        obj["m1dc_role"] = "terrain"
+                        # Link to TERRAIN collection
+                        for col in obj.users_collection:
+                            col.objects.unlink(obj)
+                        terrain_col.objects.link(obj)
+                        # [TERRAIN][EXTENT] proof: log dimensions, scale, role
+                        from mathutils import Vector
+                        bbox = [obj.matrix_world @ Vector(c) for c in obj.bound_box]
+                        ext_x = max(v.x for v in bbox) - min(v.x for v in bbox)
+                        ext_y = max(v.y for v in bbox) - min(v.y for v in bbox)
+                        log_info(f"[Terrain][EXTENT] obj={obj.name} | extent_xy=({ext_x:.2f}m, {ext_y:.2f}m) | scale={tuple(round(s,4) for s in obj.scale)} | role={obj.get('m1dc_role')} | collection=TERRAIN")
+                        if ext_x < 200.0 or ext_y < 200.0:
+                            log_warn(f"[Terrain][EXTENT] ⚠ obj={obj.name} extent very small ({ext_x:.0f}x{ext_y:.0f}m) — may be a single tile, not merged terrain")
+                ok3 = len(imported_objs) > 0
+                step1_msg = f"Step1 Terrain: OBJ artifact imported ({len(imported_objs)} objects)" if ok3 else "Step1 Terrain: import failed"
+            except Exception as ex:
+                log_error(f"[Terrain] OBJ artifact import failed: {ex}")
+                step1_msg = f"Step1 Terrain: import failed ({ex})"
+                ok3 = False
 
         elif terrain_root and os.path.isdir(terrain_root):
             # Prepared terrain dataset (OBJ or TIFF pipeline)
@@ -359,8 +388,24 @@ class M1DC_OT_RunPipeline(Operator):
         links_db_valid = bool(s.links_db_path and os.path.isfile(s.links_db_path))
         if links_db_valid and ok2 and s.step2_linked_objects > 0:
             try:
+                # Build legends FIRST (required for Phase 5 code writeback)
                 log_info("[Pipeline] Building legends before materialization...")
-                # Legend building logic (ops.py lines 9400-9450)
+                gpkg_path = (s.gpkg_path.strip() if s.gpkg_path else "")
+                output_dir = s.output_dir or str(get_output_dir())
+                if gpkg_path and os.path.isfile(gpkg_path) and output_dir:
+                    try:
+                        from ...pipeline.diagnostics.legend_encoding import build_all_legends
+                        legend_result = build_all_legends(gpkg_path, output_dir, max_distinct=500)
+                        if legend_result.get("success"):
+                            coded_cols = [c["column_name"] for c in legend_result.get("columns", [])]
+                            log_info(f"[Pipeline] Legends built: {len(coded_cols)} columns = {coded_cols}")
+                        else:
+                            log_warn(f"[Pipeline] Legend build returned error: {legend_result.get('error', '?')}")
+                    except Exception as leg_ex:
+                        log_warn(f"[Pipeline] Legend build failed (non-fatal): {leg_ex}")
+                else:
+                    log_warn("[Pipeline] Legend build skipped (no GPKG or output_dir)")
+
                 log_info("[Pipeline] Materializing face attributes...")
                 _materialize_face_attributes(context, s, include_features=True)
                 s.step3_basemap_done = True

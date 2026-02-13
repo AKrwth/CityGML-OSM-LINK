@@ -27,14 +27,41 @@ from ...utils.logging_system import log_info, log_warn, log_error
 
 
 def _find_first_obj(folder: str) -> Optional[str]:
-    """Find first .obj file in folder; return full path or None."""
+    """Find .obj file in folder with priority: merged > tiles. Return full path or None."""
     p = Path(folder)
     if not p.exists() or not p.is_dir():
         return None
-    for f in p.iterdir():
-        if f.suffix.lower() == ".obj":
+    
+    # Collect ALL .obj candidates for PROOF logging
+    all_objs = sorted(
+        [f for f in p.iterdir() if f.suffix.lower() == ".obj"],
+        key=lambda x: x.name,
+    )
+    candidate_names = [f.name for f in all_objs]
+    
+    if not all_objs:
+        log_warn(f"[Terrain][PICK] No .obj files found in {folder}")
+        return None
+    
+    # Priority 1: Look for merged artifacts (dem_merged.obj, rgb_merged.obj, *_merged.obj)
+    merged_patterns = ["dem_merged.obj", "rgb_merged.obj", "terrain_merged.obj", "basemap_merged.obj"]
+    for pattern in merged_patterns:
+        candidate = p / pattern
+        if candidate.exists():
+            log_info(f"[Terrain][PICK] chosen={pattern} reason=exact_name_match candidates={candidate_names}")
+            return str(candidate)
+    
+    # Priority 2: Look for any *merged*.obj case-insensitive (sorted for determinism)
+    for f in all_objs:
+        if "merged" in f.stem.lower():
+            log_info(f"[Terrain][PICK] chosen={f.name} reason=merged_glob candidates={candidate_names}")
             return str(f)
-    return None
+    
+    # Priority 3: Fallback to first .obj alphabetically (likely a tile - LOUD warning)
+    chosen = all_objs[0]
+    log_warn(f"[Terrain][PICK] ⚠ NO MERGED ARTIFACT FOUND — fallback to first .obj: {chosen.name}")
+    log_warn(f"[Terrain][PICK] candidates={candidate_names} (may be too small for full coverage)")
+    return str(chosen)
 
 
 def _find_basemap_json(folder: str) -> Optional[str]:
@@ -351,6 +378,9 @@ def import_basemap_obj_artifact(
     before = set(bpy.data.objects)
     
     # Import OBJ (will also auto-load .mtl if it exists)
+    from pathlib import Path
+    obj_basename = Path(obj_path).name
+    log_info(f"[Terrain][Import] Importing OBJ: {obj_basename}")
     try:
         bpy.ops.wm.obj_import(filepath=obj_path)
     except Exception as ex:
@@ -359,6 +389,20 @@ def import_basemap_obj_artifact(
     after = set(bpy.data.objects)
     imported = [o for o in (after - before) if o.type in {"MESH", "EMPTY", "ARMATURE"}]
     
+    # Proof log: imported geometry stats
+    for obj in imported:
+        if obj.type == "MESH" and obj.data:
+            verts = len(obj.data.vertices)
+            faces = len(obj.data.polygons)
+            bbox = [obj.matrix_world @ Vector(c) for c in obj.bound_box]
+            minx = min(v.x for v in bbox)
+            maxx = max(v.x for v in bbox)
+            miny = min(v.y for v in bbox)
+            maxy = max(v.y for v in bbox)
+            extent_x = maxx - minx
+            extent_y = maxy - miny
+            log_info(f"[Terrain][Import] Mesh: {obj.name} | verts={verts} faces={faces} | extent_xy=({extent_x:.2f}m, {extent_y:.2f}m)")
+    
     if not imported:
         raise RuntimeError(f"[M1DC][Basemap] OBJ import returned no objects from {obj_path}")
     
@@ -366,7 +410,42 @@ def import_basemap_obj_artifact(
     jpath = _find_basemap_json(folder)
     if not jpath:
         log_warn(f"[Basemap] No basemap.json found in {folder}")
-        log_warn("[Basemap] Importing OBJ without world origin placement. CityGML tiles may misalign!")
+        # === PLACEMENT CONTRACT: attempt WORLD_ORIGIN fallback ===
+        placement_mode = "UNPLACED_NO_BASEMAP"
+        try:
+            from ...utils.common import get_world_origin_minmax
+            min_e, min_n, max_e, max_n = get_world_origin_minmax()
+            if min_e is not None and min_n is not None:
+                # Place terrain using mesh bounds + WORLD_ORIGIN
+                for o in imported:
+                    if o.type == "MESH" and o.data:
+                        bbox = [o.matrix_world @ Vector(c) for c in o.bound_box]
+                        mesh_min_x = min(v.x for v in bbox)
+                        mesh_min_y = min(v.y for v in bbox)
+                        mesh_max_x = max(v.x for v in bbox)
+                        mesh_max_y = max(v.y for v in bbox)
+                        mesh_cx = (mesh_min_x + mesh_max_x) / 2.0
+                        mesh_cy = (mesh_min_y + mesh_max_y) / 2.0
+                        # If mesh coords are in world CRS (large values), convert to local
+                        if abs(mesh_cx) > 1e5:
+                            # Mesh is in world CRS — shift to local
+                            o.location.x -= min_e
+                            o.location.y -= min_n
+                            placement_mode = "WORLD_ORIGIN_SHIFT"
+                            log_info(f"[Terrain][PLACE] mode={placement_mode} shifted by (-{min_e:.0f}, -{min_n:.0f})")
+                        else:
+                            placement_mode = "WORLD_ORIGIN_ASSUMED_LOCAL"
+                            log_info(f"[Terrain][PLACE] mode={placement_mode} mesh appears already in local coords")
+                        break
+            else:
+                log_warn("[Basemap] WORLD_ORIGIN not set — cannot place terrain. placement_mode=UNPLACED_NO_BASEMAP")
+        except Exception as wo_ex:
+            log_warn(f"[Basemap] WORLD_ORIGIN fallback failed: {wo_ex}")
+        
+        for o in imported:
+            if o.type == "MESH":
+                o["m1dc_placement_mode"] = placement_mode
+        log_info(f"[Terrain][PLACE] mode={placement_mode} (no basemap.json)")
         return imported
     
     try:

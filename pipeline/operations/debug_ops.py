@@ -56,7 +56,7 @@ class M1DC_OT_DebugMeshAttributes(Operator):
         print("[M1DC Debug] OBJ:", obj.name)
         
         try:
-            import ops
+            from ... import ops
             norm_source_tile = getattr(ops, "norm_source_tile", None)
             if norm_source_tile:
                 print("[M1DC Debug] source_tile:", norm_source_tile(obj.get("source_tile") or obj.name))
@@ -113,7 +113,7 @@ class M1DC_OT_DebugMeshAttributes(Operator):
 
         # Also inspect evaluated mesh
         try:
-            import ops
+            from ... import ops
             _get_evaluated_mesh = getattr(ops, "_get_evaluated_mesh", None)
             if _get_evaluated_mesh:
                 obj_eval, me_eval = _get_evaluated_mesh(context, obj)
@@ -167,7 +167,7 @@ class M1DC_OT_DebugLinkDBSchema(Operator):
         link_db = getattr(s, "links_db_path", "") if s else ""
         
         try:
-            import ops
+            from ... import ops
             _is_link_db_valid = getattr(ops, "_is_link_db_valid", None)
             if not _is_link_db_valid:
                 # Fallback validation
@@ -248,7 +248,7 @@ class M1DC_OT_DebugGPKGTableInfo(Operator):
 
         # Choose table
         try:
-            import ops
+            from ... import ops
             FEATURE_TABLE_FALLBACK = getattr(ops, "FEATURE_TABLE_FALLBACK", "osm_buildings")
         except Exception:
             FEATURE_TABLE_FALLBACK = "osm_buildings"
@@ -276,7 +276,7 @@ class M1DC_OT_DebugGPKGTableInfo(Operator):
             from pathlib import Path
             
             try:
-                import ops
+                from ... import ops
                 open_db_readonly = getattr(ops, "open_db_readonly", None)
                 _sanitize_identifier = getattr(ops, "_sanitize_identifier", lambda x: x)
             except Exception:
@@ -356,7 +356,7 @@ class M1DC_OT_DebugLinkKeyIdentity(Operator):
 
         mesh = obj.data
         try:
-            import ops
+            from ... import ops
             norm_source_tile = getattr(ops, "norm_source_tile", None)
             _load_link_lookup = getattr(ops, "_load_link_lookup", None)
             if not all([norm_source_tile, _load_link_lookup]):
@@ -394,7 +394,7 @@ class M1DC_OT_DebugBuildingIdxStats(Operator):
             return {"CANCELLED"}
 
         try:
-            import ops
+            from ... import ops
             _get_face_link_attr = getattr(ops, "_get_face_link_attr", None)
             if not _get_face_link_attr:
                 # Fallback: try building_idx directly
@@ -486,7 +486,7 @@ class M1DC_OT_FindBestLinkKeyAttr(Operator):
 
         # Full implementation delegated to ops.py (this is a complex scoring algorithm ~150 LOC)
         try:
-            import ops
+            from ... import ops
             impl_op = getattr(ops, "M1DC_OT_FindBestLinkKeyAttr", None)
             if impl_op and hasattr(impl_op, "execute"):
                 return impl_op.execute(self, context)
@@ -513,7 +513,7 @@ class M1DC_OT_DebugBuildingIdCandidates(Operator):
 
         # Full implementation delegated to ops.py (this is a complex analysis ~200 LOC)
         try:
-            import ops
+            from ... import ops
             impl_op = getattr(ops, "M1DC_OT_DebugBuildingIdCandidates", None)
             if impl_op and hasattr(impl_op, "execute"):
                 return impl_op.execute(self, context)
@@ -539,7 +539,7 @@ class M1DC_OT_RepairBuildingIdxToFace(Operator):
 
         # Full implementation delegated to ops.py (this is a domain conversion ~100 LOC)
         try:
-            import ops
+            from ... import ops
             impl_op = getattr(ops, "M1DC_OT_RepairBuildingIdxToFace", None)
             if impl_op and hasattr(impl_op, "execute"):
                 return impl_op.execute(self, context)
@@ -592,7 +592,7 @@ class M1DC_OT_RemapBuildingIdxTest(Operator):
 
         # Full implementation delegated to ops.py (this is a complex remap algorithm ~250 LOC)
         try:
-            import ops
+            from ... import ops
             impl_op = getattr(ops, "M1DC_OT_RemapBuildingIdxTest", None)
             if impl_op and hasattr(impl_op, "execute"):
                 return impl_op.execute(self, context)

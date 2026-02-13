@@ -319,9 +319,10 @@ class M1DC_OT_AlignCityGMLToTerrainZ(Operator):
             self.report({"ERROR"}, "CityGML collection not found. Import CityGML first (Phase 1).")
             return {"CANCELLED"}
 
-        terrain_obj = bpy.data.objects.get("dem_merged")
+        from ...pipeline.terrain.terrain_validation import get_terrain_object
+        terrain_obj = get_terrain_object()
         if not terrain_obj:
-            self.report({"ERROR"}, "DGM terrain not found. Import DGM terrain first (Phase 3).")
+            self.report({"ERROR"}, "Terrain not found (checked m1dc_role, TERRAIN collection, legacy names). Import terrain first.")
             return {"CANCELLED"}
 
         # Execute Z-alignment
@@ -436,19 +437,12 @@ class M1DC_OT_TerrainZAlignLowMedian(Operator):
             log_info("[TerrainZAlign] TERRAIN Z ALIGNMENT (LOW-MEDIAN)")
             log_info("[TerrainZAlign] ═══════════════════════════════════")
 
-            # Find terrain object (dem_merged)
-            terrain_obj = None
-            if "dem_merged" in bpy.data.objects:
-                terrain_obj = bpy.data.objects["dem_merged"]
-            else:
-                # Fallback: search for terrain-like objects
-                for obj in bpy.data.objects:
-                    if obj.type == 'MESH' and ("dem" in obj.name.lower() or "terrain" in obj.name.lower()):
-                        terrain_obj = obj
-                        break
+            # Find terrain object (unified lookup)
+            from ...pipeline.terrain.terrain_validation import get_terrain_object
+            terrain_obj = get_terrain_object()
 
             if not terrain_obj:
-                self.report({"ERROR"}, "Terrain object (dem_merged) not found")
+                self.report({"ERROR"}, "Terrain not found (checked m1dc_role, TERRAIN collection, legacy names)")
                 log_error("[TerrainZAlign] Terrain object not found")
                 return {"CANCELLED"}
 
@@ -524,29 +518,12 @@ class M1DC_OT_TerrainAlignToCity(Operator):
                 self.report({"WARNING"}, f"Terrain already aligned: {last_align}")
                 return {"CANCELLED"}
 
-            # Find terrain object
-            terrain_obj = None
-            terrain_name = context.scene.get("M1DC_TERRAIN_OBJ_NAME")
-
-            if terrain_name:
-                terrain_obj = bpy.data.objects.get(terrain_name)
+            # Find terrain object (unified lookup)
+            from ...pipeline.terrain.terrain_validation import get_terrain_object
+            terrain_obj = get_terrain_object()
 
             if not terrain_obj:
-                # Fallback: try common names
-                for candidate_name in ["dem_merged", "terrain", "DEM", "Terrain"]:
-                    terrain_obj = bpy.data.objects.get(candidate_name)
-                    if terrain_obj:
-                        break
-
-            if not terrain_obj:
-                # Last resort: find any object with "dem" or "terrain" in name
-                for obj in bpy.data.objects:
-                    if obj.type == 'MESH' and ("dem" in obj.name.lower() or "terrain" in obj.name.lower()):
-                        terrain_obj = obj
-                        break
-
-            if not terrain_obj:
-                error_msg = "Terrain object not found (looking for 'dem_merged', 'terrain', or similar)"
+                error_msg = "Terrain not found (checked m1dc_role, TERRAIN collection, legacy names)"
                 log_error(f"[Terrain] {error_msg}")
                 self.report({"ERROR"}, error_msg)
                 return {"CANCELLED"}

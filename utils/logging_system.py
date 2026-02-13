@@ -22,12 +22,28 @@ from typing import List, Tuple
 
 def is_verbose_debug() -> bool:
     """
-    Detect if running under VSCode debugger (or any debugger).
+    Check if verbose debug mode is active.
     
-    Returns True if sys.gettrace() is active (debugger attached).
+    Priority:
+    1. Scene property m1dc_verbose_debug (user-togglable)
+    2. Fallback: debugger attached (sys.gettrace())
+    
+    Returns True if verbose logging enabled.
     When True: full logging verbosity (no suppression).
     When False: apply "3 examples + progress + summary" policy.
     """
+    try:
+        import bpy
+        scene = bpy.context.scene
+        # Check scene property via m1dc_settings group (toggleable in UI)
+        settings = getattr(scene, "m1dc_settings", None)
+        if settings is not None:
+            verbose_prop = getattr(settings, "m1dc_verbose_debug", None)
+            if verbose_prop is not None:
+                return bool(verbose_prop)
+    except Exception:
+        pass
+    # Fallback: debugger attached
     return sys.gettrace() is not None
 
 

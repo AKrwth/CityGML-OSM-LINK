@@ -88,10 +88,20 @@ def dist2(ax: float, ay: float, bx: float, by: float) -> float:
 
 def is_verbose_debug() -> bool:
     """
-    [PHASE 13] Check if running under VSCode debugger.
+    [PHASE 13] Check if verbose debug mode is active.
+    Priority: scene.m1dc_settings.m1dc_verbose_debug > sys.gettrace().
     When True: full logging verbosity (no suppression).
     When False: "3 examples + progress + summary" policy.
     """
+    try:
+        import bpy
+        settings = getattr(bpy.context.scene, "m1dc_settings", None)
+        if settings is not None:
+            v = getattr(settings, "m1dc_verbose_debug", None)
+            if v is not None:
+                return bool(v)
+    except Exception:
+        pass
     return sys.gettrace() is not None
 
 

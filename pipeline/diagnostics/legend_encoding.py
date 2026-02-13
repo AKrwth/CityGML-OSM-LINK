@@ -660,6 +660,12 @@ def init_legend_caches(legends_dir, table_name):
             continue
 
     print(f"[LegendEncoding] Loaded {loaded_count} legend caches for table '{table_name}'")
+    # [PROOF][LEGEND] Determinism guard: log CODE_KEYS whitelist and cache entry counts
+    print(f"[PROOF][LEGEND] CODE_KEYS={CODE_KEYS}")
+    print(f"[PROOF][LEGEND] encode_cache_keys={sorted(_ENCODE_CACHE.keys())} decode_cache_keys={sorted(_DECODE_CACHE.keys())}")
+    for _k in sorted(_ENCODE_CACHE.keys()):
+        _n = len(_ENCODE_CACHE[_k])
+        print(f"[PROOF][LEGEND] cache={_k} entries={_n} sample={list(_ENCODE_CACHE[_k].items())[:3]}")
     return loaded_count
 
 

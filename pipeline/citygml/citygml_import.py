@@ -13,8 +13,9 @@ import logging
 import os
 import sys
 import re
+import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import List, Tuple, Optional, Dict
+from typing import List, Tuple, Optional, Dict, Any
 from mathutils import Vector
 from ...utils.logging_system import log_info, log_warn, log_error, is_verbose_debug, LoopProgressTracker
 from ...utils.common import (
@@ -146,6 +147,69 @@ def _apply_clip_big():
                 area.spaces[0].clip_end = 1_000_000.0
     except Exception:
         pass
+
+
+def _localname(tag: str) -> str:
+    """Return namespace-stripped XML tag localname."""
+    try:
+        if "}" in str(tag):
+            return str(tag).split("}", 1)[1]
+        return str(tag)
+    except Exception:
+        return str(tag)
+
+
+def _parse_corner_text(text: Optional[str]) -> Optional[Tuple[float, ...]]:
+    if not text:
+        return None
+    try:
+        vals = [float(t) for t in str(text).strip().split()]
+        if len(vals) >= 2:
+            return tuple(vals)
+    except Exception:
+        return None
+    return None
+
+
+def read_citygml_tile_metadata(path: Path) -> Dict[str, Any]:
+    """Read lightweight per-tile metadata (name + lowerCorner) from the same source document."""
+    metadata_name = path.stem
+    lower_corner = None
+    source_doc = path.name
+    try:
+        root_seen = False
+        for event, elem in ET.iterparse(str(path), events=("start", "end")):
+            lname = _localname(elem.tag)
+
+            if event == "start" and not root_seen:
+                root_seen = True
+                for k, v in elem.attrib.items():
+                    if _localname(k) == "id" and v:
+                        metadata_name = str(v).strip()
+                        break
+
+            if event != "end":
+                continue
+
+            if lower_corner is None and lname == "lowerCorner":
+                lower_corner = _parse_corner_text(elem.text)
+            elif lname == "name":
+                txt = (elem.text or "").strip()
+                if txt:
+                    metadata_name = txt
+
+            if lower_corner is not None and metadata_name:
+                break
+
+            elem.clear()
+    except Exception as ex:
+        log_warn(f"[CityGML] metadata parse fallback for {path.name}: {ex}")
+
+    return {
+        "metadata_name": metadata_name,
+        "lower_corner": lower_corner,
+        "source_doc": source_doc,
+    }
 
 
 def ensure_collection(name: str):
@@ -439,6 +503,9 @@ def import_citygml_folder(
     imported_objects = 0
     tile_coords = {}  # {filename: (e, n, km_or_none)}
     tile_objects: Dict[str, List[bpy.types.Object]] = {}
+    tile_contexts: Dict[str, Dict[str, Any]] = {}
+    proof_logged_tiles = set()
+    legacy_operator_notice_logged = False
     
     try:
         # Preflight: show available citygml import ops in import_scene
@@ -471,6 +538,9 @@ def import_citygml_folder(
                 if op_callable is None:
                     continue
                 try:
+                    if (not legacy_operator_notice_logged) and op_name == "citygml_lod1_single_mesh":
+                        log_info("[CityGML] Operator name is legacy; processing LoD2 tiles from input documents when present.")
+                        legacy_operator_notice_logged = True
                     op_callable(filepath=str(f))
                     imported_ok = True
                     # [PHASE 13] Suppress repetitive import logs after first 3
@@ -489,6 +559,14 @@ def import_citygml_folder(
             after = set(bpy.data.objects)
             new_objs = list(after - before)
 
+            tile_meta = read_citygml_tile_metadata(f)
+            tile_contexts[f.name] = {
+                "tile_filename": f.name,
+                "metadata_name": tile_meta.get("metadata_name", f.stem),
+                "lower_corner": tile_meta.get("lower_corner"),
+                "source_doc": tile_meta.get("source_doc", f.name),
+            }
+
             # Tag and organize new objects
             for obj in new_objs:
                 # Normalize to stable key used by DB/materialize lookups
@@ -497,6 +575,10 @@ def import_citygml_folder(
                     obj["source_tile"] = Path(str(f.name)).stem
                 except Exception:
                     obj["source_tile"] = str(f.name)
+                obj["m1dc_tile_filename"] = str(f.name)
+                obj["m1dc_metadata_name"] = str(tile_contexts[f.name]["metadata_name"])
+                obj["m1dc_lower_corner"] = str(tile_contexts[f.name]["lower_corner"])
+                obj["m1dc_source_doc"] = str(tile_contexts[f.name]["source_doc"])
                 link_exclusively_to_collection(obj, collection)
                 obj.rotation_euler = (0.0, 0.0, 0.0)
                 obj.scale = (1.0, 1.0, 1.0)
@@ -694,6 +776,8 @@ def import_citygml_folder(
                     debug_tile_count += 1
 
                     # Optional ground clamp (only touches Z)
+                    z_offset_applied = 0.0
+                    z_offset_reason = "clamp_to_ground disabled"
                     if clamp_to_ground:
                         min_z = float("inf")
                         for obj in objs:
@@ -701,8 +785,12 @@ def import_citygml_folder(
                                 wco = obj.matrix_world @ Vector(corner)
                                 min_z = min(min_z, wco.z)
                         if min_z != float("inf"):
+                            z_offset_applied = float(-min_z)
+                            z_offset_reason = "align tile minZ to local ground (clamp_to_ground)"
                             for obj in objs:
                                 obj.location.z -= min_z
+                        else:
+                            z_offset_reason = "clamp_to_ground requested but minZ unavailable"
 
                     # === FINAL XY ASSIGNMENT: Enforce canonical local coordinate mapping ===
                     # This is the LAST write to obj.location.x/y - nothing must modify it afterward
@@ -725,8 +813,34 @@ def import_citygml_folder(
                         obj.location.y = local_y
                         # obj.location.z unchanged (ground clamp already applied)
 
+                        obj["m1dc_z_offset_applied"] = float(z_offset_applied)
+                        obj["m1dc_z_offset_reason"] = str(z_offset_reason)
+
                         # === PFLICHT-LOG: Verify scale=(1,1,1) and location ===
-                        print(f"[GML] tile={source} loc={tuple(obj.location)} scale={tuple(obj.scale)}")
+                        if is_verbose_debug():
+                            print(f"[GML] tile={source} obj={obj.name} loc={tuple(obj.location)} scale={tuple(obj.scale)}")
+
+                    tile_ctx = tile_contexts.get(source, {
+                        "tile_filename": source,
+                        "metadata_name": source,
+                        "lower_corner": None,
+                        "source_doc": source,
+                    })
+                    if source not in proof_logged_tiles:
+                        log_info(
+                            "[CityGML][TileProof] "
+                            f"tile_filename={tile_ctx.get('tile_filename')} | "
+                            f"metadata.name={tile_ctx.get('metadata_name')} | "
+                            f"lower_corner={tile_ctx.get('lower_corner')} | "
+                            f"source_doc={tile_ctx.get('source_doc')}"
+                        )
+                        log_info(
+                            "[CityGML][TileProof] "
+                            f"tile_filename={tile_ctx.get('tile_filename')} | "
+                            f"z_offset_applied={z_offset_applied:.3f} | "
+                            f"z_offset_reason={z_offset_reason}"
+                        )
+                        proof_logged_tiles.add(source)
 
                     # Diagnostic for first 3 tiles
                     if debug_tile_count - 1 < 3:
@@ -774,6 +888,25 @@ def import_citygml_folder(
                 origin_empty["min_easting"] = float(world_min_e)
                 origin_empty["min_northing"] = float(world_min_n)
                 origin_empty["tile_size_m"] = float(tile_size_m_ref)
+
+        # Proof fallback for tiles that were imported but not aligned/sorted in this pass.
+        for source, tile_ctx in tile_contexts.items():
+            if source in proof_logged_tiles:
+                continue
+            log_info(
+                "[CityGML][TileProof] "
+                f"tile_filename={tile_ctx.get('tile_filename')} | "
+                f"metadata.name={tile_ctx.get('metadata_name')} | "
+                f"lower_corner={tile_ctx.get('lower_corner')} | "
+                f"source_doc={tile_ctx.get('source_doc')}"
+            )
+            log_info(
+                "[CityGML][TileProof] "
+                f"tile_filename={tile_ctx.get('tile_filename')} | "
+                "z_offset_applied=0.000 | "
+                "z_offset_reason=tile alignment not executed (missing tile coords or sorting disabled)"
+            )
+            proof_logged_tiles.add(source)
         
         if imported_objects and recalc_clip:
             _apply_clip_big()
@@ -855,6 +988,8 @@ class M1_DC_V6_OT_ImportCityGML(Operator, ImportHelper):
     def execute(self, context):
         folder = self.directory or os.path.dirname(self.filepath)
         folder = folder or ""
+
+        log_info("[CityGML] Legacy operator label active (LoD1 name); importer processes LoD2 tiles from input data when available.")
 
         if not folder or not os.path.isdir(folder):
             self.report({"ERROR"}, "Select a folder containing CityGML tiles.")

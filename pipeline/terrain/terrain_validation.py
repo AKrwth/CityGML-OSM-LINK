@@ -175,7 +175,7 @@ def get_terrain_object():
     # Strategy 1: Property-based detection (m1dc_role="terrain")
     for obj in bpy.data.objects:
         if obj.type == 'MESH' and obj.get("m1dc_role") == "terrain":
-            log_info(f"[VALIDATION] Terrain found via m1dc_role property: {obj.name}")
+            log_info(f"[Terrain][LOOKUP] found={obj.name} via=role role=terrain collection={','.join(c.name for c in obj.users_collection)}")
             return obj
     
     # Strategy 2: TERRAIN collection
@@ -183,18 +183,18 @@ def get_terrain_object():
     if terrain_col:
         for obj in terrain_col.objects:
             if obj.type == 'MESH':
-                log_info(f"[VALIDATION] Terrain found in TERRAIN collection: {obj.name}")
+                log_info(f"[Terrain][LOOKUP] found={obj.name} via=collection role={obj.get('m1dc_role','unset')} collection=TERRAIN")
                 return obj
     
     # Strategy 3: Legacy hardcoded names
     terrain = bpy.data.objects.get(TERRAIN_DEM_NAME)
     if terrain:
-        log_info(f"[VALIDATION] Terrain found via legacy name: {terrain.name}")
+        log_info(f"[Terrain][LOOKUP] found={terrain.name} via=legacy_name role={terrain.get('m1dc_role','unset')}")
         return terrain
 
     terrain = bpy.data.objects.get(TERRAIN_RGB_NAME)
     if terrain:
-        log_info(f"[VALIDATION] Terrain found via legacy RGB name: {terrain.name}")
+        log_info(f"[Terrain][LOOKUP] found={terrain.name} via=legacy_rgb_name role={terrain.get('m1dc_role','unset')}")
         return terrain
     
     # Not found
@@ -469,17 +469,44 @@ def validate_and_decide() -> Tuple[str, Dict]:
 
     # HARD FAIL: No XY overlap
     if not intersection_xy:
+        # Check if terrain is unplaced (no basemap.json)
+        placement_mode = terrain.get("m1dc_placement_mode", "")
+        if placement_mode == "UNPLACED_NO_BASEMAP":
+            log_error(f"[VALIDATION] FAIL: Terrain '{terrain.name}' is UNPLACED (no basemap.json) — cannot compute meaningful XY overlap")
+            diag["decision"] = "FAIL"
+            diag["reason"] = f"Terrain unplaced (no basemap.json): '{terrain.name}' extent_xy=({terrain_w:.0f}m, {terrain_h:.0f}m)"
+            return ("FAIL", diag)
         log_error(f"[VALIDATION] FAIL: No XY overlap between DEM and CityGML!")
+        log_error(f"[VALIDATION] chosen={terrain.name} extent_xy=({terrain_w:.0f}m, {terrain_h:.0f}m) vs CityGML=({gml_w:.0f}m, {gml_h:.0f}m)")
         diag["decision"] = "FAIL"
-        diag["reason"] = f"No XY overlap: DEM vs CityGML (center_dist={center_dist_xy:.1f}m)"
+        diag["reason"] = f"No XY overlap: chosen='{terrain.name}' extent_xy=({terrain_w:.0f}m,{terrain_h:.0f}m) center_dist={center_dist_xy:.1f}m"
         return ("FAIL", diag)
 
     # HARD FAIL: DEM is implausibly small vs CityGML
-    MIN_COVERAGE = 0.6
+    # Allow user override via scene settings (default 0.6 = 60% coverage)
+    _coverage_source = "hardcoded_fallback"
+    try:
+        scene = bpy.context.scene
+        settings = getattr(scene, "m1dc_settings", None)
+        if settings and hasattr(settings, "min_terrain_coverage"):
+            MIN_COVERAGE = float(settings.min_terrain_coverage)
+            _coverage_source = "scene.m1dc_settings.min_terrain_coverage"
+        else:
+            MIN_COVERAGE = 0.6
+            _coverage_source = "fallback(no_settings)" if not settings else "fallback(no_attr)"
+    except Exception:
+        MIN_COVERAGE = 0.6
+    
+    log_info(f"[PROOF][SETTINGS] MIN_COVERAGE={MIN_COVERAGE:.2f} source={_coverage_source}")
+    
     if cover_x < MIN_COVERAGE or cover_y < MIN_COVERAGE:
-        log_error(f"[VALIDATION] FAIL: DEM too small vs CityGML (cover_x={cover_x:.3f}, cover_y={cover_y:.3f})")
+        log_error(f"[VALIDATION] FAIL: DEM too small vs CityGML (cover_x={cover_x:.3f}, cover_y={cover_y:.3f}, min={MIN_COVERAGE:.2f})")
+        log_error(f"[VALIDATION] chosen={terrain.name} extent_xy=({terrain_w:.0f}m, {terrain_h:.0f}m) vs CityGML=({gml_w:.0f}m, {gml_h:.0f}m)")
         diag["decision"] = "FAIL"
-        diag["reason"] = f"DEM too small vs CityGML (cover_x={cover_x:.3f}, cover_y={cover_y:.3f}, min={MIN_COVERAGE})"
+        diag["reason"] = (
+            f"DEM too small: chosen='{terrain.name}' extent_xy=({terrain_w:.0f}m,{terrain_h:.0f}m) "
+            f"vs CityGML=({gml_w:.0f}m,{gml_h:.0f}m) cover_x={cover_x:.3f} cover_y={cover_y:.3f} min={MIN_COVERAGE:.2f}"
+        )
         return ("FAIL", diag)
 
     # 5. Enforce georef disable (always, even if CLEAN)

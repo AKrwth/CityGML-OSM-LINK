@@ -29,7 +29,7 @@ class M1DC_OT_SpreadsheetReload(Operator):
         # NOTE: _build_spreadsheet_rows is defined in ops.py
         # This would need to be refactored into a separate spreadsheet module
         try:
-            import ops
+            from ... import ops
             _build_spreadsheet_rows = getattr(ops, "_build_spreadsheet_rows", None)
             if not _build_spreadsheet_rows:
                 self.report({"ERROR"}, "Spreadsheet logic not available")
@@ -70,7 +70,7 @@ class M1DC_OT_SpreadsheetColumnsSelect(Operator):
 
         # Rebuild rows so dynamic columns reflect the new selection
         try:
-            import ops
+            from ... import ops
             _build_spreadsheet_rows = getattr(ops, "_build_spreadsheet_rows", None)
             if _build_spreadsheet_rows:
                 _build_spreadsheet_rows(context, s)
@@ -91,7 +91,7 @@ class M1DC_OT_SpreadsheetSyncFromSelection(Operator):
             return {"CANCELLED"}
 
         try:
-            import ops
+            from ... import ops
             _perform_face_sync = getattr(ops, "_perform_face_sync", None)
             if not _perform_face_sync:
                 self.report({"WARNING"}, "Face sync logic not available")
@@ -122,7 +122,7 @@ class M1DC_OT_SpreadsheetSelectRow(Operator):
             return {"CANCELLED"}
 
         try:
-            import ops
+            from ... import ops
             _get_active_mesh = getattr(ops, "_get_active_mesh", None)
             _build_spreadsheet_rows = getattr(ops, "_build_spreadsheet_rows", None)
             _select_faces_by_building_idx = getattr(ops, "_select_faces_by_building_idx", None)
@@ -170,7 +170,7 @@ class M1DC_OT_SpreadsheetDeferredSync(Operator):
             return {"CANCELLED"}
         
         try:
-            import ops
+            from ... import ops
             _perform_face_sync = getattr(ops, "_perform_face_sync", None)
             if _perform_face_sync:
                 _perform_face_sync(context, s)

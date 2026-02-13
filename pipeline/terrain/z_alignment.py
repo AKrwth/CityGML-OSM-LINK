@@ -31,8 +31,7 @@ from ...utils.logging_system import log_info, log_warn, log_error
 
 # Constants
 CITYGML_COLLECTION = "CITYGML_TILES"
-TERRAIN_COLLECTION = "M1DC_TERRAIN_DGM"
-# DEPRECATED: TERRAIN_OBJECT = "dem_merged"  # Legacy fallback only
+TERRAIN_COLLECTION = "TERRAIN"  # Must match workflow_ops + terrain_validation
 TERRAIN_OBJECT_LEGACY_DEM = "dem_merged"
 TERRAIN_OBJECT_LEGACY_RGB = "rgb_merged"
 
@@ -64,44 +63,31 @@ def get_building_base_z(obj) -> Optional[float]:
 
 def get_terrain_object():
     """
-    Get terrain object with robust fallback detection strategy.
+    Delegate to terrain_validation.get_terrain_object() — single truth source.
     
-    Priority (in order):
-    1. Any object with custom property m1dc_role="terrain"
-    2. First mesh in TERRAIN collection (if exists)
-    3. Legacy names: dem_merged (preferred) or rgb_merged (fallback)
-    4. None if not found
-
-    Returns:
-        Blender Object (MESH) or None
+    See pipeline/terrain/terrain_validation.py for the canonical lookup logic
+    (m1dc_role → TERRAIN collection → legacy names).
     """
-    # Strategy 1: Property-based detection (m1dc_role="terrain")
+    try:
+        from .terrain_validation import get_terrain_object as _canonical_lookup
+        return _canonical_lookup()
+    except ImportError:
+        pass
+    # Inline fallback (should never be reached when add-on loads correctly)
     for obj in bpy.data.objects:
         if obj.type == 'MESH' and obj.get("m1dc_role") == "terrain":
             log_info(f"[Z-Align] Terrain found via m1dc_role property: {obj.name}")
             return obj
-    
-    # Strategy 2: TERRAIN collection
     terrain_col = bpy.data.collections.get(TERRAIN_COLLECTION)
     if terrain_col:
         for obj in terrain_col.objects:
             if obj.type == 'MESH':
-                log_info(f"[Z-Align] Terrain found in TERRAIN collection: {obj.name}")
                 return obj
-    
-    # Strategy 3: Legacy hardcoded names
-    terrain = bpy.data.objects.get(TERRAIN_OBJECT_LEGACY_DEM)
-    if terrain:
-        log_info(f"[Z-Align] Terrain found via legacy DEM name: {terrain.name}")
-        return terrain
-
-    terrain = bpy.data.objects.get(TERRAIN_OBJECT_LEGACY_RGB)
-    if terrain:
-        log_info(f"[Z-Align] Terrain found via legacy RGB name: {terrain.name}")
-        return terrain
-    
-    # Not found
-    log_warn(f"[Z-Align] Terrain not found (searched: m1dc_role='terrain', TERRAIN collection, legacy names)")
+    for name in (TERRAIN_OBJECT_LEGACY_DEM, TERRAIN_OBJECT_LEGACY_RGB):
+        t = bpy.data.objects.get(name)
+        if t:
+            return t
+    log_warn("[Z-Align] Terrain not found")
     return None
 
 

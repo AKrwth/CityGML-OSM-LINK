@@ -716,3 +716,19 @@ class M1DCSettings(PropertyGroup):
     # -------- Decoded Face Attributes (Semantic Inspector Yellow Box #2) --------
     inspector_decoded_attrs: CollectionProperty(type=M1DCDecodedAttrRow)
     inspector_decoded_attrs_index: IntProperty(name="Decoded Attr Index", default=0)
+
+    # -------- Verbose Debug Toggle (PHASE 13) --------
+    m1dc_verbose_debug: BoolProperty(
+        name="Verbose Debug Logging",
+        description="Enable verbose per-object debug logging (disabled by default for clean output)",
+        default=False,
+    )
+
+    # -------- Terrain Validation Settings --------
+    min_terrain_coverage: FloatProperty(
+        name="Minimum Terrain Coverage",
+        description="Minimum terrain XY coverage ratio vs CityGML extent (0.6 = 60%). Lower for proof-runs with partial terrain.",
+        default=0.6,
+        min=0.1,
+        max=1.0,
+    )

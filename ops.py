@@ -3951,8 +3951,13 @@ def _run_citygml_import(s):
         min_e, min_n, max_e, max_n = get_world_origin_minmax()
         crs = get_scene_crs() if 'get_scene_crs' in globals() else 'unknown'
 
-        # 2) DEM (dem_merged)
-        dem_obj = bpy.data.objects.get('dem_merged')
+        # 2) DEM — use SAME lookup as terrain_validation (single truth source)
+        dem_obj = None
+        try:
+            from .pipeline.terrain.terrain_validation import get_terrain_object
+            dem_obj = get_terrain_object()
+        except Exception:
+            dem_obj = bpy.data.objects.get('dem_merged')  # legacy fallback
         if dem_obj:
             dem_loc = tuple(round(v, 3) for v in dem_obj.location)
             dem_bbox = [tuple(round(v, 3) for v in dem_obj.matrix_world @ mathutils.Vector(corner)) for corner in dem_obj.bound_box]

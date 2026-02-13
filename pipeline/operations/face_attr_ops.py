@@ -52,7 +52,7 @@ class M1DC_OT_DebugFaceAttrs(Operator):
             return {"CANCELLED"}
         
         try:
-            import ops
+            from ... import ops
             _debug_face_attributes = getattr(ops, "_debug_face_attributes", None)
             if not _debug_face_attributes:
                 self.report({"ERROR"}, "Debug logic not available")
@@ -85,7 +85,7 @@ class M1DC_OT_BakeEvalFaceIntAttrs(Operator):
             return {"CANCELLED"}
         
         try:
-            import ops
+            from ... import ops
             _bake_eval_face_int_attrs = getattr(ops, "_bake_eval_face_int_attrs", None)
             if not _bake_eval_face_int_attrs:
                 self.report({"ERROR"}, "Bake logic not available")
@@ -123,7 +123,7 @@ class M1DC_OT_MakePresentationAttrs(Operator):
             return {"CANCELLED"}
         
         try:
-            import ops
+            from ... import ops
             _make_presentation_attrs = getattr(ops, "_make_presentation_attrs", None)
             if not _make_presentation_attrs:
                 self.report({"ERROR"}, "Presentation logic not available")
@@ -155,7 +155,7 @@ class M1DC_OT_CommitEvaluatedToOriginal(Operator):
             return {"CANCELLED"}
         
         try:
-            import ops
+            from ... import ops
             _commit_evaluated_to_original = getattr(ops, "_commit_evaluated_to_original", None)
             if not _commit_evaluated_to_original:
                 self.report({"ERROR"}, "Commit logic not available")

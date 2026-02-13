@@ -58,7 +58,7 @@ class M1DC_OT_InspectActiveFace(Operator):
             return {"CANCELLED"}
 
         try:
-            import ops
+            from ... import ops
             _sync_edit_mesh = getattr(ops, "_sync_edit_mesh", None)
             _get_active_face_poly_index = getattr(ops, "_get_active_face_poly_index", None)
             _inspect_active_face_impl = getattr(ops, "_inspect_active_face_impl", None)
@@ -90,6 +90,18 @@ class M1DC_OT_FilterByLegendText(Operator):
     bl_label = "Filter By Legend Text"
     bl_options = {"REGISTER", "UNDO"}
 
+    # Properties expected by UI (ui.py:524-525)
+    attr_name_code: StringProperty(
+        name="Legend Code Attribute",
+        description="Attribute name for legend code filtering",
+        default="amenity_code"
+    )
+    text_value: StringProperty(
+        name="Text Value",
+        description="Substring to match in legend values",
+        default=""
+    )
+    # Legacy property (kept for compatibility)
     text_filter: StringProperty(
         name="Text Filter",
         description="Substring to match in legend values",
@@ -102,7 +114,7 @@ class M1DC_OT_FilterByLegendText(Operator):
             return {"CANCELLED"}
         
         try:
-            import ops
+            from ... import ops
             _filter_by_legend_text_impl = getattr(ops, "_filter_by_legend_text_impl", None)
             if not _filter_by_legend_text_impl:
                 self.report({"ERROR"}, "Legend filter logic not available")
@@ -128,7 +140,7 @@ class M1DC_OT_InspectorApplyQuery(Operator):
             return {"CANCELLED"}
         
         try:
-            import ops
+            from ... import ops
             _apply_inspector_query_impl = getattr(ops, "_apply_inspector_query_impl", None)
             if not _apply_inspector_query_impl:
                 self.report({"ERROR"}, "Query logic not available")
@@ -154,7 +166,7 @@ class M1DC_OT_InspectorClearQuery(Operator):
             return {"CANCELLED"}
         
         try:
-            import ops
+            from ... import ops
             _clear_inspector_query_impl = getattr(ops, "_clear_inspector_query_impl", None)
             if not _clear_inspector_query_impl:
                 self.report({"ERROR"}, "Clear query logic not available")
@@ -180,7 +192,7 @@ class M1DC_OT_InspectorZoomToSelection(Operator):
             return {"CANCELLED"}
         
         try:
-            import ops
+            from ... import ops
             _zoom_to_inspector_selection_impl = getattr(ops, "_zoom_to_inspector_selection_impl", None)
             if not _zoom_to_inspector_selection_impl:
                 self.report({"ERROR"}, "Zoom logic not available")
@@ -206,7 +218,7 @@ class M1DC_OT_InspectorExportReport(Operator):
             return {"CANCELLED"}
         
         try:
-            import ops
+            from ... import ops
             _export_inspector_report_impl = getattr(ops, "_export_inspector_report_impl", None)
             if not _export_inspector_report_impl:
                 self.report({"ERROR"}, "Export logic not available")
