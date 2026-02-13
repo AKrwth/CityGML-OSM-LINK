@@ -32,7 +32,7 @@ These files are the **single source of truth** and must be kept up-to-date:
 
 ---
 
-### [ADDON_ARCHITECTURE.md](ADDON_ARCHITECTURE.md)
+### [ARCHITECTURE.md](ARCHITECTURE.md)
 **Audience:** Developers, maintainers, agents (technical deep-dive)  
 **Content:**
 - Current folder structure (accurate tree diagram)
@@ -81,7 +81,7 @@ These files are the **single source of truth** and must be kept up-to-date:
 - Old experiments and alternatives
 - Why certain approaches were abandoned
 
-**Update frequency:** When archiving sections from ADDON_ARCHITECTURE.md
+**Update frequency:** When archiving sections from ARCHITECTURE.md
 
 ---
 
@@ -103,7 +103,7 @@ These files are the **single source of truth** and must be kept up-to-date:
 
 ### When to Update Living Docs
 
-| Scenario | Update README.md | Update ADDON_ARCHITECTURE.md |
+| Scenario | Update README.md | Update ARCHITECTURE.md |
 |----------|------------------|------------------------------|
 | New feature added | ✅ Yes (usage instructions) | ⏳ Maybe (if architecture changes) |
 | Import paths changed | ❌ No | ✅ Yes (import patterns section) |
@@ -117,17 +117,17 @@ These files are the **single source of truth** and must be kept up-to-date:
 
 ### What NOT to Do
 
-❌ **Do NOT** add phase logs to living docs (README or ADDON_ARCHITECTURE)  
+❌ **Do NOT** add phase logs to living docs (README or ARCHITECTURE)  
 ❌ **Do NOT** keep outdated sections "for reference" (archive instead)  
-❌ **Do NOT** duplicate content between README and ADDON_ARCHITECTURE  
-❌ **Do NOT** create new top-level markdown files (use README or ADDON_ARCHITECTURE sections)  
+❌ **Do NOT** duplicate content between README and ARCHITECTURE  
+❌ **Do NOT** create new top-level markdown files (use README or ARCHITECTURE sections)  
 ❌ **Do NOT** delete archived phase documents (they are immutable proof)
 
 ---
 
 ### How to Archive Old Content
 
-When ADDON_ARCHITECTURE.md becomes too large:
+When ARCHITECTURE.md becomes too large:
 
 1. **Identify historical sections:**
    - Old experiments, deprecated structures, superseded designs
@@ -136,9 +136,9 @@ When ADDON_ARCHITECTURE.md becomes too large:
 2. **Move to archive:**
    - Copy full section to `_archive/architecture_history.md`
    - Add date/phase reference
-   - Add note: "Moved from ADDON_ARCHITECTURE.md during Phase X cleanup"
+   - Add note: "Moved from ARCHITECTURE.md during Phase X cleanup"
 
-3. **Replace in ADDON_ARCHITECTURE.md:**
+3. **Replace in ARCHITECTURE.md:**
    - Keep 1-paragraph summary
    - Add link: `_Historical details in [architecture_history.md](_archive/architecture_history.md)_`
 
@@ -153,7 +153,7 @@ When ADDON_ARCHITECTURE.md becomes too large:
 **First time in this codebase?**
 
 1. Read [README.md](README.md) (10 min) → Understand what the add-on does
-2. Read [ADDON_ARCHITECTURE.md](ADDON_ARCHITECTURE.md) (20 min) → Understand how it's built
+2. Read [ARCHITECTURE.md](ARCHITECTURE.md) (20 min) → Understand how it's built
 3. Skim [_archive/HISTORY_SNAPSHOT.md](_archive/HISTORY_SNAPSHOT.md) (5 min) → Context on past changes
 
 **Need deep historical context?**
@@ -161,7 +161,7 @@ When ADDON_ARCHITECTURE.md becomes too large:
 
 **Making changes?**
 - Update README.md if user-facing behavior changes
-- Update ADDON_ARCHITECTURE.md if structure/imports change
+- Update ARCHITECTURE.md if structure/imports change
 - Do NOT modify archived docs (immutable)
 
 ---
@@ -171,10 +171,10 @@ When ADDON_ARCHITECTURE.md becomes too large:
 Use this before committing major changes:
 
 - [ ] README.md reflects current user workflow
-- [ ] ADDON_ARCHITECTURE.md folder tree matches actual structure
-- [ ] No outdated import paths in ADDON_ARCHITECTURE.md
+- [ ] ARCHITECTURE.md folder tree matches actual structure
+- [ ] No outdated import paths in ARCHITECTURE.md
 - [ ] Changelog in README.md updated with version number
-- [ ] No duplicate content between README and ADDON_ARCHITECTURE
+- [ ] No duplicate content between README and ARCHITECTURE
 - [ ] Historical content archived (not deleted)
 - [ ] Phase logs (if new ones created) moved to `_archive/phases_YYYYMMDD/`
 
@@ -187,7 +187,7 @@ Use this before committing major changes:
 **Solution:** Separate living truth from historical proof.
 
 **Benefits:**
-- ✅ New contributors have clear entry points (README → ADDON_ARCHITECTURE)
+- ✅ New contributors have clear entry points (README → ARCHITECTURE)
 - ✅ Agents get token-efficient context (HISTORY_SNAPSHOT)
 - ✅ No information loss (everything archived, not deleted)
 - ✅ Maintainability (living docs stay current, archive grows linearly)

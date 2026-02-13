@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1080" viewBox="0 0 1080 1080" role="img" aria-label="Graphical abstract">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#f8fafc"/>
+      <stop offset="100%" stop-color="#e2e8f0"/>
+    </linearGradient>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#1e293b"/>
+    </marker>
+    <style>
+      .thin { stroke:#334155; stroke-width:3; fill:none; }
+      .solid { stroke:#1e293b; stroke-width:4; fill:none; marker-end:url(#arr); }
+      .cube { fill:#cbd5e1; stroke:#334155; stroke-width:2; }
+      .map { fill:#dbeafe; stroke:#2563eb; stroke-width:2; }
+      .txt { fill:#0f172a; font: 600 30px 'Segoe UI', Arial, sans-serif; }
+      .small { fill:#334155; font: 500 24px 'Segoe UI', Arial, sans-serif; }
+    </style>
+  </defs>
+
+  <rect x="0" y="0" width="1080" height="1080" fill="url(#bg)"/>
+
+  <rect x="130" y="130" width="820" height="820" rx="24" ry="24" fill="#ffffff" stroke="#94a3b8" stroke-width="3"/>
+  <text x="470" y="190" class="txt">Blender</text>
+  <text x="395" y="225" class="small">integration space</text>
+
+  <!-- CityGML 3D blocks -->
+  <rect class="cube" x="230" y="360" width="120" height="180"/>
+  <rect class="cube" x="370" y="310" width="130" height="230"/>
+  <rect class="cube" x="520" y="390" width="110" height="150"/>
+  <text x="250" y="585" class="small">CityGML</text>
+
+  <!-- OSM 2D layer -->
+  <rect class="map" x="690" y="350" width="220" height="180" rx="12" ry="12"/>
+  <polyline class="thin" points="710,380 760,410 805,395 850,425 890,405"/>
+  <polyline class="thin" points="720,465 770,440 820,470 870,445"/>
+  <circle cx="760" cy="410" r="6" fill="#2563eb"/>
+  <circle cx="850" cy="425" r="6" fill="#2563eb"/>
+  <text x="760" y="585" class="small">OSM</text>
+
+  <!-- Terrain strip -->
+  <path d="M220 690 C300 660, 380 720, 460 690 C540 660, 620 720, 700 690 C780 660, 860 720, 910 690" class="thin"/>
+  <text x="470" y="760" class="small">Terrain / Raster</text>
+
+  <!-- Linking arrows -->
+  <path d="M620 450 C660 440, 690 430, 710 420" class="solid"/>
+  <path d="M560 520 C640 520, 700 500, 740 480" class="solid"/>
+  <text x="620" y="500" class="small">linking</text>
+</svg>

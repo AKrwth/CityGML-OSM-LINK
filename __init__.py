@@ -107,6 +107,8 @@ CLASSES = (
     M1DC_OT_ImportRGBBasemap,
     M1DC_OT_ImportDGMTerrain,
     M1DC_OT_AlignCityGMLToTerrainZ,
+    M1DC_OT_TerrainAlignmentCheck,
+    M1DC_OT_TerrainZAlignLowMedian,
     M1DC_OT_Validate,
     M1DC_OT_RunAll,
     M1DC_OT_RunPipeline,

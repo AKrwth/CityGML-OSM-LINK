@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="240" viewBox="0 0 1200 240" role="img" aria-label="Pipeline diagram">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#334155"/>
+    </marker>
+    <style>
+      .box { fill:#f8fafc; stroke:#334155; stroke-width:2; }
+      .txt { fill:#0f172a; font: 600 20px 'Segoe UI', Arial, sans-serif; }
+      .ln { stroke:#334155; stroke-width:2.5; marker-end:url(#arrow); }
+      .title { fill:#0f172a; font: 700 22px 'Segoe UI', Arial, sans-serif; }
+    </style>
+  </defs>
+
+  <text x="40" y="42" class="title">CityGML–OSM-LINK pipeline</text>
+
+  <rect class="box" x="40" y="90" rx="10" ry="10" width="130" height="56"/>
+  <text class="txt" x="65" y="124">Terrain</text>
+
+  <rect class="box" x="205" y="90" rx="10" ry="10" width="130" height="56"/>
+  <text class="txt" x="228" y="124">CityGML</text>
+
+  <rect class="box" x="370" y="90" rx="10" ry="10" width="130" height="56"/>
+  <text class="txt" x="405" y="124">OSM</text>
+
+  <rect class="box" x="535" y="90" rx="10" ry="10" width="130" height="56"/>
+  <text class="txt" x="563" y="124">Linking</text>
+
+  <rect class="box" x="700" y="90" rx="10" ry="10" width="150" height="56"/>
+  <text class="txt" x="724" y="124">Materialize</text>
+
+  <rect class="box" x="885" y="90" rx="10" ry="10" width="120" height="56"/>
+  <text class="txt" x="918" y="124">Legend</text>
+
+  <rect class="box" x="1040" y="90" rx="10" ry="10" width="120" height="56"/>
+  <text class="txt" x="1069" y="124">Inspector</text>
+
+  <line class="ln" x1="170" y1="118" x2="200" y2="118"/>
+  <line class="ln" x1="335" y1="118" x2="365" y2="118"/>
+  <line class="ln" x1="500" y1="118" x2="530" y2="118"/>
+  <line class="ln" x1="665" y1="118" x2="695" y2="118"/>
+  <line class="ln" x1="850" y1="118" x2="880" y2="118"/>
+  <line class="ln" x1="1005" y1="118" x2="1035" y2="118"/>
+</svg>

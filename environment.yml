@@ -1,0 +1,15 @@
+# Development/reproducibility environment for CityGML-OSM-LINK.
+# Blender uses its own embedded Python runtime (Blender 4.5.x -> Python 3.11.x).
+# This conda environment is for tooling, validation, and data-processing workflows
+# outside Blender; it does not replace Blender's internal Python.
+
+name: citygml-osm-link
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - gdal
+  - rasterio
+  - pillow
+  - requests
+  - setuptools
