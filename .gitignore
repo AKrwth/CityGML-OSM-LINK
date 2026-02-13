@@ -48,21 +48,8 @@ desktop.ini
 .claude/
 
 # Local audit outputs / evidence packs (keep local or move to separate evidence repo)
-audit/
-docs/audit/
-docs/legacy/
-docs/_archive/
-docs/DOCS_INDEX.md
-docs/CHANGELOG_AUDIT.md
-docs/CHANGELOG_PIPELINE.md
-docs/CHANGELOG_ADDONS.md
-docs/CHANGELOG_UTILS.md
-docs/CHANGELOG_TEMPLATES.md
-docs/CHANGELOG_3RDPARTY.md
-docs/CHANGELOG_DEVNOTES.md
-docs/DEVNOTES.md
-docs/PIPELINE_NOTES.md
-docs/DIAGRAMS.md
+docs/
+
 
 # ============================================================================
 # Project-specific outputs (pre-Phase 8.5)
