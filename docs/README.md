@@ -1,4 +1,4 @@
-# Documentation (Deep Dive)
+# Documentation
 
 <p align="center">
   <img src="Images/CityGML-OSM-LINK.png" width="700">
