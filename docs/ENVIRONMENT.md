@@ -49,3 +49,18 @@ Use `conda-forge`:
 conda create -n citygml-osm-link python=3.11 gdal rasterio pillow requests setuptools -c conda-forge
 conda activate citygml-osm-link
 ```
+
+---
+
+## References
+
+- OGC CityGML Standard
+	- https://www.ogc.org/standards/citygml/
+- OGC GeoPackage Encoding Standard
+	- https://www.ogc.org/standards/geopackage/
+- Blender Manual: Working Limits (floating-point precision context)
+	- https://docs.blender.org/manual/en/latest/advanced/limits.html
+- GDAL Documentation
+	- https://gdal.org/
+- GDAL Citation
+	- https://gdal.org/citation.html
