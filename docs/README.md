@@ -31,8 +31,6 @@ This repository is structured as research infrastructure for reproducible urban 
 
 1. Start at the root [../README.md](../README.md).
 2. Continue with [ARCHITECTURE.md](ARCHITECTURE.md).
-3. Use [DIAGRAMS.md](DIAGRAMS.md) for visual context.
-4. Use [audit/](audit/) and [_archive/](_archive/) only when deep historical traceability is required.
 
 ## GDAL Installation Note
 
