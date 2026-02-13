@@ -50,6 +50,7 @@ desktop.ini
 # Local audit outputs / evidence packs (keep local or move to separate evidence repo)
 audit/
 docs/audit/
+docs/legacy/
 docs/_archive/
 docs/DOCS_INDEX.md
 docs/CHANGELOG_AUDIT.md
