@@ -13,8 +13,10 @@ This repository is structured as research infrastructure for reproducible urban 
 
 ## Documentation Map
 
+- [ADDON_ARCHITECTURE.md](ADDON_ARCHITECTURE.md)
+  - Deterministic pipeline architecture, contracts, and invariants (binding reference).
 - [ARCHITECTURE.md](ARCHITECTURE.md)
-  - Pipeline and add-on architecture, module responsibilities, and implementation constraints.
+  - Pipeline stage overview and module responsibilities.
 - [DIAGRAMS.md](DIAGRAMS.md)
   - Diagram index and references to visual workflow material.
 - [DOCS_INDEX.md](DOCS_INDEX.md)
@@ -30,7 +32,8 @@ This repository is structured as research infrastructure for reproducible urban 
 ## Reading Order
 
 1. Start at the root [../README.md](../README.md).
-2. Continue with [ARCHITECTURE.md](ARCHITECTURE.md).
+2. Continue with [ADDON_ARCHITECTURE.md](ADDON_ARCHITECTURE.md) for contracts and invariants.
+3. See [ARCHITECTURE.md](ARCHITECTURE.md) for pipeline stage descriptions.
 
 ## GDAL Installation Note
 

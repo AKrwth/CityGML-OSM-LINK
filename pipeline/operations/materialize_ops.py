@@ -75,179 +75,347 @@ class M1DC_OT_MaterializeLinks(Operator):
         try:
             from ... import ops
             from ...utils.logging_system import log_info as _log_info
-            
+            from ..linking.mesh_discovery import collect_citygml_meshes
+
             log_info("[Materialize] Starting materialization pipeline...")
-            
-            # Get active mesh (if working in mesh context)
-            active_obj = getattr(context, "object", None)
-            
-            # Collect CityGML meshes from scene
-            _log_info("[Materialize] Collecting CityGML meshes...")
-            citygml_col = bpy.data.collections.get("CITYGML_TILES")
-            if citygml_col:
-                mesh_objs = [o for o in citygml_col.objects if o.type == "MESH"]
-            else:
-                mesh_objs = [o for o in bpy.data.objects if o.type == "MESH" and o.get("source_tile")]
-            
+
+            # ── D1: Hard precondition — link DB must exist ──
+            link_db = getattr(s, "links_db_path", "").strip()
+            import os
+            if not link_db or not os.path.isfile(link_db):
+                # Try to auto-detect from output_dir/links/ (TASK C: canonical location)
+                from pathlib import Path
+                out_dir = Path(getattr(s, "output_dir", "").strip() or "")
+                gpkg_stem = Path(getattr(s, "gpkg_path", "")).stem if getattr(s, "gpkg_path", "") else ""
+                # Check links/ subdirectory first (canonical), then root (legacy)
+                candidates = []
+                if gpkg_stem and out_dir.is_dir():
+                    candidates.append(out_dir / "links" / f"{gpkg_stem}_links.sqlite")
+                    candidates.append(out_dir / f"{gpkg_stem}_links.sqlite")
+                found = None
+                for candidate in candidates:
+                    if candidate.is_file():
+                        found = candidate
+                        break
+                if found:
+                    s.links_db_path = str(found.resolve())
+                    link_db = s.links_db_path
+                    log_info(f"[Materialize] Auto-detected link DB: {link_db}")
+                else:
+                    msg = (
+                        f"[Materialize] CANCELLED: No link DB found. "
+                        f"links_db_path={link_db!r}, searched={[str(c) for c in candidates]}. "
+                        f"Run 'Link CityGML ↔ OSM' first."
+                    )
+                    log_error(msg)
+                    self.report({"ERROR"}, "No link DB found. Run linking first.")
+                    return {"CANCELLED"}
+
+            log_info(f"[Materialize] Link DB: {link_db} (size={os.path.getsize(link_db)} bytes)")
+
+            # Collect CityGML meshes via centralised discovery
+            mesh_objs = collect_citygml_meshes(log_prefix="[Materialize][Discovery]")
+
             if not mesh_objs:
                 log_warn("[Materialize] No CityGML meshes found")
                 self.report({"WARNING"}, "No CityGML meshes found in scene")
-                return {"FINISHED"}
-            
+                return {"CANCELLED"}
+
             log_info(f"[Materialize] Found {len(mesh_objs)} CityGML meshes")
-            
+
             # ── Phase 3: Write core link data (osm_way_id, confidence, dist, iou)
             #    to FACE attributes from link DB. Required BEFORE Phase 4/5. ──
             _load_link_lookup = getattr(ops, "_load_link_lookup", None)
-            _get_source_tile = getattr(ops, "_get_source_tile", None)
             ensure_face_attr_fn = getattr(ops, "ensure_face_attr", None)
             _normalize_osm_id_fn = getattr(ops, "_normalize_osm_id", None)
 
-            if not all([_load_link_lookup, _get_source_tile, ensure_face_attr_fn]):
-                log_warn("[Materialize] P3: Required link-writeback functions not available in ops")
-            else:
-                link_map = _load_link_lookup(s)
-                if not link_map:
-                    log_warn("[Materialize] P3: link_map empty (no link DB or no entries)")
-                else:
-                    _log_info(f"[Materialize] P3: Loaded {len(link_map)} link entries")
-                    # [PROOF][LINK_KEYS] Sample keys from link_map for canon verification
-                    _sample_keys = list(link_map.keys())[:3]
-                    for _sk in _sample_keys:
-                        _sv = link_map[_sk]
-                        _log_info(f"[PROOF][LINK_KEYS] sample key={_sk!r} osm_id={_sv.get('osm_id','?')} conf={_sv.get('link_conf',0):.3f}")
-                    total_linked_faces = 0
-                    meshes_written = []
+            # Use canonical normalization (single source of truth)
+            try:
+                from ..linking.key_normalization import normalize_source_tile
+            except ImportError:
+                normalize_source_tile = getattr(ops, "norm_source_tile", None)
 
-                    for mesh_obj in mesh_objs:
-                        mesh = mesh_obj.data
-                        source_tile = _get_source_tile(mesh_obj)
-                        face_count = len(mesh.polygons)
-                        if face_count == 0:
-                            continue
+            if not all([_load_link_lookup, normalize_source_tile, ensure_face_attr_fn]):
+                log_error("[Materialize] P3: Required link-writeback functions not available")
+                self.report({"ERROR"}, "Required functions missing from ops module")
+                return {"CANCELLED"}
 
-                        # Resolve building_idx attribute (same fallback chain as _collect_unique_osm_keys_from_meshes)
-                        idx_attr = None
-                        for candidate in ("gml_building_idx", "gml__building_idx", "building_idx"):
-                            a = mesh.attributes.get(candidate)
-                            if a and a.domain == 'FACE' and a.data_type == 'INT' and len(a.data) == face_count:
-                                idx_attr = a
-                                break
+            # D1: Hard precondition — link_map must be non-empty
+            link_map = _load_link_lookup(s)
+            if not link_map:
+                log_error("[Materialize] P3: CANCELLED — link_map empty (no link DB or no entries). Run linking first.")
+                self.report({"ERROR"}, "Link map is empty — no links found. Run linking first.")
+                return {"CANCELLED"}
 
-                        if idx_attr is None:
-                            log_warn(f"[Materialize] P3: {mesh_obj.name} has no building_idx attr, skipping")
-                            continue
+            _log_info(f"[Materialize] P3: Loaded {len(link_map)} link entries")
+            # [PROOF] Show tile distribution in link_map
+            _tile_counts = {}
+            for _k in link_map:
+                _tile_counts[_k[0]] = _tile_counts.get(_k[0], 0) + 1
+            _log_info(f"[PROOF][LINKMAP_TILES] distinct tiles in link_map: {len(_tile_counts)}")
+            for _tn, _tc in sorted(_tile_counts.items())[:5]:
+                _log_info(f"[PROOF][LINKMAP_TILES]   '{_tn}' -> {_tc} entries")
+            # [PROOF][LINK_KEYS] Sample keys from link_map for canon verification
+            _sample_keys = list(link_map.keys())[:3]
+            for _sk in _sample_keys:
+                _sv = link_map[_sk]
+                _log_info(f"[PROOF][LINK_KEYS] sample key={_sk!r} osm_id={_sv.get('osm_id','?')} conf={_sv.get('link_conf',0):.3f}")
+            total_linked_faces = 0
+            meshes_written = []
 
-                        # Ensure target FACE attributes
-                        osm_attr = ensure_face_attr_fn(mesh, "osm_way_id", "INT")
-                        conf_attr = ensure_face_attr_fn(mesh, "link_conf", "FLOAT")
-                        dist_attr = ensure_face_attr_fn(mesh, "link_dist_m", "FLOAT")
-                        iou_attr = ensure_face_attr_fn(mesh, "link_iou", "FLOAT")
-                        has_attr = ensure_face_attr_fn(mesh, "has_link", "INT")
+            for mesh_obj in mesh_objs:
+                mesh = mesh_obj.data
+                source_tile = normalize_source_tile(mesh_obj.get("source_tile", mesh_obj.name))
+                face_count = len(mesh.polygons)
+                if face_count == 0:
+                    continue
 
-                        if not osm_attr:
-                            log_warn(f"[Materialize] P3: Cannot create osm_way_id for {mesh_obj.name}")
-                            continue
+                # Resolve building_idx attribute (same fallback chain)
+                idx_attr = None
+                for candidate in ("gml_building_idx", "gml__building_idx", "building_idx"):
+                    a = mesh.attributes.get(candidate)
+                    if a and a.domain == 'FACE' and a.data_type == 'INT' and len(a.data) == face_count:
+                        idx_attr = a
+                        break
 
-                        linked_here = 0
-                        for fi in range(face_count):
-                            try:
-                                bidx = int(idx_attr.data[fi].value)
-                            except Exception:
-                                continue
-                            row = link_map.get((source_tile, bidx))
-                            if row:
-                                osm_id_str = row.get("osm_id", "")
-                                try:
-                                    osm_int = int(osm_id_str) if osm_id_str and osm_id_str not in ("\u2014", "") else 0
-                                except (ValueError, OverflowError):
-                                    osm_int = 0
-                                osm_attr.data[fi].value = osm_int
-                                if conf_attr and fi < len(conf_attr.data):
-                                    conf_attr.data[fi].value = float(row.get("link_conf", 0.0))
-                                if dist_attr and fi < len(dist_attr.data):
-                                    dist_attr.data[fi].value = float(row.get("link_dist_m", 0.0))
-                                if iou_attr and fi < len(iou_attr.data):
-                                    iou_attr.data[fi].value = float(row.get("link_iou", 0.0))
-                                if has_attr and fi < len(has_attr.data):
-                                    has_attr.data[fi].value = 1
-                                if osm_int != 0:
-                                    linked_here += 1
+                if idx_attr is None:
+                    log_warn(f"[Materialize] P3: {mesh_obj.name} has no building_idx attr, skipping")
+                    continue
 
-                        total_linked_faces += linked_here
-                        meshes_written.append(mesh_obj.name)
-                        mesh.update()
-                        # [PROOF][LINK_KEYS] Per-mesh hit/miss for canon verification
-                        _log_info(f"[PROOF][LINK_KEYS] mesh={mesh_obj.name} source_tile={source_tile!r} faces={face_count} linked={linked_here} miss={face_count - linked_here}")
+                # D2: Ensure target FACE attributes with correct type/domain
+                # Schema: osm_way_id(INT), osm_id_int(INT), link_conf(FLOAT),
+                #         link_dist_m(FLOAT), link_iou(FLOAT), has_link(INT)
+                _p3_schema = [
+                    ("osm_way_id", "INT"),
+                    ("osm_id_int", "INT"),
+                    ("link_conf", "FLOAT"),
+                    ("link_dist_m", "FLOAT"),
+                    ("link_iou", "FLOAT"),
+                    ("has_link", "INT"),
+                ]
+                for attr_name, attr_type in _p3_schema:
+                    # Check if existing attr has wrong type/domain -> remove + recreate
+                    existing = mesh.attributes.get(attr_name)
+                    if existing and (existing.domain != "FACE" or existing.data_type != attr_type):
+                        _log_info(f"[D2][SCHEMA] {mesh_obj.name}.{attr_name}: wrong type/domain "
+                                  f"(got {existing.data_type}/{existing.domain}, want {attr_type}/FACE) — removing + recreating")
+                        try:
+                            mesh.attributes.remove(existing)
+                        except Exception:
+                            pass
 
-                    _log_info(f"[Materialize] P3 PROOF: {len(meshes_written)} meshes, {total_linked_faces} linked faces")
-                    if meshes_written:
-                        _log_info(f"[Materialize] P3 first meshes: {meshes_written[:3]}")
-                    
-                    # [PROOF][ATTR_SCHEMA] Validate that written attrs have correct domain/type
-                    for mesh_obj in mesh_objs[:2]:  # Sample first 2
-                        m = mesh_obj.data
-                        fc = len(m.polygons)
-                        schema_lines = []
-                        for aname in ("osm_way_id", "link_conf", "link_dist_m", "link_iou", "has_link"):
-                            a = m.attributes.get(aname)
-                            if a:
-                                nz = sum(1 for i in range(min(len(a.data), fc)) if a.data[i].value not in (0, 0.0, b"", ""))
-                                schema_lines.append(f"{aname}:{a.data_type}/{a.domain} len={len(a.data)} nz={nz}")
-                            else:
-                                schema_lines.append(f"{aname}:MISSING")
-                        _log_info(f"[PROOF][ATTR_SCHEMA] {mesh_obj.name} fc={fc} | {' | '.join(schema_lines)}")
+                osm_attr = ensure_face_attr_fn(mesh, "osm_way_id", "INT")
+                osm_id_int_attr = ensure_face_attr_fn(mesh, "osm_id_int", "INT")
+                conf_attr = ensure_face_attr_fn(mesh, "link_conf", "FLOAT")
+                dist_attr = ensure_face_attr_fn(mesh, "link_dist_m", "FLOAT")
+                iou_attr = ensure_face_attr_fn(mesh, "link_iou", "FLOAT")
+                has_attr = ensure_face_attr_fn(mesh, "has_link", "INT")
+
+                if not osm_attr:
+                    log_warn(f"[Materialize] P3: Cannot create osm_way_id for {mesh_obj.name}")
+                    continue
+
+                # [PROOF] Pre-loop: count how many link_map entries match this tile
+                _tile_entry_count = sum(1 for k in link_map if k[0] == source_tile)
+                _first_bidx = int(idx_attr.data[0].value) if face_count > 0 else -1
+                _probe0 = (source_tile, _first_bidx)
+                _log_info(
+                    f"[PROOF][P3_PRE] mesh={mesh_obj.name} source_tile={source_tile!r} "
+                    f"tile_entries_in_map={_tile_entry_count} "
+                    f"first_bidx={_first_bidx} probe0_in_map={_probe0 in link_map}"
+                )
+
+                linked_here = 0
+                _first_miss_logged = False
+                for fi in range(face_count):
+                    try:
+                        bidx = int(idx_attr.data[fi].value)
+                    except Exception:
+                        continue
+                    row = link_map.get((source_tile, bidx))
+                    if not row and not _first_miss_logged:
+                        # Diagnostic: log the first miss — scan ALL keys
+                        _probe_key = (source_tile, bidx)
+                        _near_keys = [k for k in link_map if k[0] == source_tile]
+                        _log_info(
+                            f"[PROOF][P3_MISS] mesh={mesh_obj.name} fi={fi} "
+                            f"key={_probe_key!r} key_type=({type(source_tile).__name__},{type(bidx).__name__}) "
+                            f"in_map={_probe_key in link_map} "
+                            f"near_keys_same_tile={len(_near_keys)} sample={_near_keys[:3]!r}"
+                        )
+                        if not _near_keys:
+                            # Broader search: find keys with similar tile name
+                            _similar = [k for k in link_map if source_tile[:15] in str(k[0])]
+                            _log_info(f"[PROOF][P3_MISS] no exact tile match; similar={_similar[:3]!r}")
+                        _first_miss_logged = True
+                    if row:
+                        osm_id_str = row.get("osm_id", "")
+                        try:
+                            osm_int = int(osm_id_str) if osm_id_str and osm_id_str not in ("\u2014", "") else 0
+                        except (ValueError, OverflowError):
+                            osm_int = 0
+                        osm_attr.data[fi].value = osm_int
+                        # Write osm_id_int as duplicate for Phase 4/5 canonical lookups
+                        if osm_id_int_attr and fi < len(osm_id_int_attr.data):
+                            osm_id_int_attr.data[fi].value = osm_int
+                        if conf_attr and fi < len(conf_attr.data):
+                            conf_attr.data[fi].value = float(row.get("link_conf", 0.0))
+                        if dist_attr and fi < len(dist_attr.data):
+                            dist_attr.data[fi].value = float(row.get("link_dist_m", 0.0))
+                        if iou_attr and fi < len(iou_attr.data):
+                            iou_attr.data[fi].value = float(row.get("link_iou", 0.0))
+                        if has_attr and fi < len(has_attr.data):
+                            has_attr.data[fi].value = 1
+                        if osm_int != 0:
+                            linked_here += 1
+
+                total_linked_faces += linked_here
+                meshes_written.append(mesh_obj.name)
+                # Force mesh + depsgraph update so Spreadsheet/Viewer shows data
+                mesh.update()
+                mesh_obj.update_tag()
+                # D3: Per-mesh proof log
+                _log_info(
+                    f"[D3][P3] mesh={mesh_obj.name} source_tile={source_tile!r} "
+                    f"faces_total={face_count} faces_linked={linked_here} faces_missed={face_count - linked_here}"
+                )
+                # D3: Print first 5 faces with (building_idx, osm_id_int, link_conf)
+                _proof_count = min(5, face_count)
+                for _pi in range(_proof_count):
+                    _p_bidx = int(idx_attr.data[_pi].value) if _pi < len(idx_attr.data) else -1
+                    _p_osm = osm_id_int_attr.data[_pi].value if osm_id_int_attr and _pi < len(osm_id_int_attr.data) else 0
+                    _p_conf = conf_attr.data[_pi].value if conf_attr and _pi < len(conf_attr.data) else 0.0
+                    _log_info(
+                        f"[D3][P3]   face[{_pi}] building_idx={_p_bidx} osm_id_int={_p_osm} link_conf={_p_conf:.3f}"
+                    )
+
+            _log_info(f"[Materialize] P3 PROOF: {len(meshes_written)} meshes, {total_linked_faces} linked faces")
+            if meshes_written:
+                _log_info(f"[Materialize] P3 first meshes: {meshes_written[:3]}")
+
+            # Readback proof: first 5 faces of first 2 meshes
+            for mesh_obj in mesh_objs[:2]:
+                m = mesh_obj.data
+                fc = min(len(m.polygons), 5)
+                osm_a = m.attributes.get("osm_id_int")
+                conf_a = m.attributes.get("link_conf")
+                if osm_a and conf_a:
+                    for fi in range(fc):
+                        _log_info(
+                            f"[ACCEPTANCE][P3] {mesh_obj.name} face[{fi}] "
+                            f"osm_id_int={osm_a.data[fi].value} link_conf={conf_a.data[fi].value:.3f}"
+                        )
+
+            # [PROOF][ATTR_SCHEMA] Validate that written attrs have correct domain/type
+            for mesh_obj in mesh_objs[:2]:  # Sample first 2
+                m = mesh_obj.data
+                fc = len(m.polygons)
+                schema_lines = []
+                for aname in ("osm_way_id", "osm_id_int", "link_conf", "link_dist_m", "link_iou", "has_link"):
+                    a = m.attributes.get(aname)
+                    if a:
+                        nz = sum(1 for i in range(min(len(a.data), fc)) if a.data[i].value not in (0, 0.0, b"", ""))
+                        schema_lines.append(f"{aname}:{a.data_type}/{a.domain} len={len(a.data)} nz={nz}")
+                    else:
+                        schema_lines.append(f"{aname}:MISSING")
+                _log_info(f"[PROOF][ATTR_SCHEMA] {mesh_obj.name} fc={fc} | {' | '.join(schema_lines)}")
+
+            # Force global depsgraph update so Spreadsheet viewer refreshes
+            bpy.context.view_layer.update()
 
             # Phase 4: Materialize OSM features (building, amenity, name, etc.)
             p4_total = 0
             if self.include_features and s.gpkg_path:
                 _log_info(f"[Materialize] P4: Materializing OSM features from {s.gpkg_path}")
-                phase4_complete = False
+                if total_linked_faces == 0:
+                    _log_info("[Materialize] P4: 0 linked faces from P3 — P4 will likely find no osm_ids to look up")
                 for mesh_obj in mesh_objs:
                     try:
                         from ... import ops as ops_module
                         materialize_osm_features = getattr(ops_module, "_materialize_osm_features", None)
                         if materialize_osm_features and callable(materialize_osm_features):
                             written_count = materialize_osm_features(
-                                mesh_obj.data, 
+                                mesh_obj.data,
                                 osm_id_attr=None,  # Will detect internally
                                 gpkg_path=s.gpkg_path
                             )
                             p4_total += (written_count or 0)
                             log_info(f"[Materialize] Phase 4: {mesh_obj.name} wrote {written_count} features")
-                            phase4_complete = True
                     except Exception as ex:
                         log_warn(f"[Materialize] Phase 4 for {mesh_obj.name}: {ex}")
                         continue
                 _log_info(f"[PROOF][P4_READBACK] total_features_written={p4_total} meshes={len(mesh_objs)}")
-            
+            else:
+                _log_info("[Materialize] P4: Skipped (include_features=False or no gpkg_path)")
+
             # Phase 5: Materialize legend codes (building_code, amenity_code, etc.)
-            _log_info(f"[Materialize] P5: Materializing legend codes")
+            _log_info("[Materialize] P5: Materializing legend codes")
             p5_total = 0
+            p5_nonzero_per_mesh = {}
             try:
                 from ... import ops as ops_module
-                output_dir = s.output_dir or str(ops.get_output_dir())
-                materialize_legend_codes = getattr(ops_module, "_materialize_legend_codes", None)
-                
-                for mesh_obj in mesh_objs:
-                    if materialize_legend_codes and callable(materialize_legend_codes):
-                        try:
-                            codes_written = materialize_legend_codes(
-                                mesh_obj.data,
-                                gpkg_path=s.gpkg_path,
-                                output_dir=output_dir
-                            )
-                            p5_total += (codes_written or 0)
-                            log_info(f"[Materialize] Phase 5: {mesh_obj.name} wrote {codes_written} codes")
-                        except Exception as ex:
-                            log_warn(f"[Materialize] Phase 5 for {mesh_obj.name}: {ex}")
-                            continue
+                from pathlib import Path as _Path
+
+                # E: Resolve legends_dir EXACTLY as output_dir/legends
+                output_dir = getattr(s, "output_dir", "").strip()
+                if not output_dir:
+                    try:
+                        output_dir = str(ops.get_output_dir())
+                    except Exception:
+                        output_dir = ""
+                legends_dir = os.path.join(output_dir, "legends") if output_dir else ""
+
+                # E: Proof logging — show resolved path
+                _log_info(f"[Materialize] P5: legends_dir resolved = {legends_dir!r}")
+                _log_info(f"[Materialize] P5: output_dir = {output_dir!r}")
+
+                if not legends_dir or not os.path.isdir(legends_dir):
+                    _log_info(
+                        f"[Materialize] P5: CANCELLED — No legends directory found at {legends_dir!r}. "
+                        f"Run 'Build Legends' first."
+                    )
+                else:
+                    legend_files = sorted([f for f in os.listdir(legends_dir) if f.endswith("_legend.csv")])
+                    # E: Proof — show number and sample filenames
+                    _log_info(f"[Materialize] P5: Found {len(legend_files)} legend files")
+                    for _lf in legend_files[:5]:
+                        _log_info(f"[Materialize] P5:   {_lf}")
+
+                    if not legend_files:
+                        _log_info("[Materialize] P5: No legend CSV files found — run 'Build Legends' first")
+                    else:
+                        materialize_legend_codes = getattr(ops_module, "_materialize_legend_codes", None)
+                        for mesh_obj in mesh_objs:
+                            if materialize_legend_codes and callable(materialize_legend_codes):
+                                try:
+                                    codes_written = materialize_legend_codes(
+                                        mesh_obj.data,
+                                        gpkg_path=s.gpkg_path,
+                                        output_dir=output_dir
+                                    )
+                                    p5_total += (codes_written or 0)
+                                    if codes_written:
+                                        p5_nonzero_per_mesh[mesh_obj.name] = codes_written
+                                        log_info(f"[Materialize] P5: {mesh_obj.name} wrote {codes_written} codes")
+                                except Exception as ex:
+                                    log_warn(f"[Materialize] P5 for {mesh_obj.name}: {ex}")
+                                    continue
+
+                        # E: Proof — summarize non-zero codes written
+                        _log_info(f"[E][P5] Non-zero codes per mesh: {p5_nonzero_per_mesh}")
+                        _log_info(f"[E][P5] Total legend codes across all meshes: {p5_total}")
+
             except Exception as ex:
-                log_warn(f"[Materialize] Phase 5 setup failed: {ex}")
+                log_warn(f"[Materialize] P5 setup failed: {ex}")
             _log_info(f"[PROOF][P5_READBACK] total_legend_codes_written={p5_total} meshes={len(mesh_objs)}")
-            
-            log_info("[Materialize] ✓ Materialization pipeline complete")
-            self.report({"INFO"}, "Materialization complete")
+
+            # Final summary
+            summary = (
+                f"P3: {total_linked_faces} linked faces across {len(meshes_written)} meshes | "
+                f"P4: {p4_total} features | P5: {p5_total} legend codes"
+            )
+            log_info(f"[Materialize] ✓ Complete: {summary}")
+            self.report({"INFO"}, f"Materialization complete: {summary}")
             return {"FINISHED"}
                 
         except Exception as ex:

@@ -50,11 +50,42 @@ Within this project, Blender functions as a semantic laboratory for geometric-se
 
 ## Determinism and reproducibility
 
-- No stochastic operations are used in the pipeline.
-- Linking is rule-based.
-- Legend encoding is deterministic.
-- Pipeline stages are explicit.
-- State can be reconstructed from scene properties and generated artifacts.
+The pipeline is fully deterministic. No stochastic operations are used at any stage.
+
+### Orchestration separation
+
+`ops.py` is the orchestration layer. All core logic lives in `pipeline/` subpackages (`terrain/`, `citygml/`, `linking/`, `operations/`, `diagnostics/`, `spreadsheet/`, `osm/`). `settings.py` defines scene properties. `ui.py` defines panel layout.
+
+### Artifact contract
+
+All pipeline artifacts are written into `output_dir/` under two subdirectories:
+
+- `output_dir/links/` — link databases (SQLite).
+- `output_dir/legends/` — legend CSVs.
+
+No artifacts are written outside `output_dir`. `links_db_path` must point inside `output_dir/links/`. If `links_db_path` is empty, Materialize auto-detects the link DB from `output_dir/links/`.
+
+### Linking determinism
+
+`pipeline.linking.key_normalization.normalize_source_tile()` is the single source of truth for `source_tile` identity. It is applied uniformly in centroid generation, link DB creation, link DB loading, and materialize lookup.
+
+### Failure semantics
+
+Operators return `{'CANCELLED'}` when preconditions are not met (missing link DB, empty link DB, terrain validation failure). No operator returns `{'FINISHED'}` on a data-processing failure.
+
+### Terrain policy
+
+DGM terrain import enforces scale `(1,1,1)` and uses min-corner alignment. No bounding-box center heuristics are used in the DGM import path.
+
+### ClobberGuard
+
+Attribute writes use schema enforcement: domain must be `FACE`, data type must match (`INT`/`FLOAT`), type upgrades are allowed, and protected attributes with non-default values are not overwritten.
+
+### Reproducibility
+
+`output_dir` can be deleted safely between runs. The pipeline recreates all artifacts deterministically from source inputs. Intermediate databases use mtime-based staleness detection to trigger rebuilds.
+
+For full architectural detail, see [docs/ADDON_ARCHITECTURE.md](docs/ADDON_ARCHITECTURE.md).
 
 ## Scientific context
 
@@ -65,7 +96,8 @@ This repository is research infrastructure for urban digital representation unde
 The root README is the primary entry point. For architecture, phased workflow details, and audits, see:
 
 - [docs/README.md](docs/README.md)
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+- [docs/ADDON_ARCHITECTURE.md](docs/ADDON_ARCHITECTURE.md) — Deterministic pipeline architecture and contracts.
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — Pipeline stage overview.
 - [docs/DIAGRAMS.md](docs/DIAGRAMS.md)
 - [docs/ENVIRONMENT.md](docs/ENVIRONMENT.md)
 - [docs/DOCS_INDEX.md](docs/DOCS_INDEX.md)
@@ -78,3 +110,30 @@ Notes:
 
 - Blender-provided modules (`bpy`, `bmesh`, `mathutils`) are intentionally not listed in `requirements.txt`.
 - Python standard-library modules are intentionally not listed in `requirements.txt`.
+
+## Repository Structure
+
+```text
+M1_DC_V6/
+├── __init__.py          # Add-on entry point (bl_info, registration)
+├── ops.py               # Orchestrator (thin wrappers, no operational logic)
+├── ui.py                # Panel layout
+├── settings.py          # Scene property definitions
+├── auto_load.py         # Class auto-loader
+├── pipeline/            # All operational logic
+│   ├── citygml/         # CityGML import & materials
+│   ├── linking/         # GML↔OSM linking, key normalization, caching
+│   ├── operations/      # Blender operator implementations
+│   ├── diagnostics/     # Legend encoding, spatial debug, geometry checks
+│   ├── osm/             # GPKG reader
+│   ├── spreadsheet/     # Building table data management
+│   └── terrain/         # Terrain import, alignment, validation
+├── utils/               # Shared helpers (logging, geometry, validation)
+├── docs/                # Documentation & architecture
+│   ├── dev/             # Developer-only debug/test scripts (not runtime)
+│   └── Images/          # Documentation images
+├── requirements.txt     # Python runtime dependencies
+└── environment.yml      # Conda environment spec
+```
+
+`docs/dev/` contains standalone diagnostic scripts for development and debugging. They are never imported by the add-on. See [docs/dev/README.md](docs/dev/README.md).

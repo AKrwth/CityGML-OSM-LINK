@@ -60,6 +60,23 @@ docs/**
 !docs/Images/
 !docs/Images/**
 
+# Developer/debug scripts (tracked)
+!docs/dev/
+!docs/dev/*.py
+!docs/dev/*.md
+
+# Developer outputs (NOT tracked — machine-specific)
+# Regenerate with scripts in docs/dev/; see docs/dev/README.md
+
+
+# ============================================================================
+# Debug / test output files (prevent accidental commits)
+# ============================================================================
+*_output.txt
+*_output*.txt
+*_debug.txt
+*_dump.txt
+
 
 # ============================================================================
 # Project-specific outputs (pre-Phase 8.5)

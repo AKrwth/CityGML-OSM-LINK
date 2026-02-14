@@ -190,20 +190,8 @@ def _build_gml_from_scene(out_db: Path) -> int:
     if not _HAVE_BPY or iter_citygml_buildings is None or local_to_crs_xy is None:
         raise RuntimeError("Blender context not available for GML centroid fallback")
 
-    # Import norm_source_tile here to normalize keys
-    try:
-        from ...ops import norm_source_tile
-    except ImportError:
-        def norm_source_tile(v):
-            """Fallback normalization: extract stem without extension."""
-            if not v:
-                return ""
-            s = str(v).strip()
-            if '/' in s or '\\' in s:
-                s = s.split('/')[-1].split('\\')[-1]
-            if '.' in s:
-                s = '.'.join(s.split('.')[:-1])
-            return s
+    # Import canonical key normalization (single source of truth)
+    from .key_normalization import normalize_source_tile as norm_source_tile
 
     objs = bpy.data.collections.get("CITYGML_TILES")
     candidates = list(objs.objects) if objs else [o for o in bpy.data.objects if o.type == "MESH"]
@@ -336,10 +324,17 @@ def ensure_link_dbs(gpkg_path: str, gml_dir: str, out_dir: str | Path | None = N
     base_out = Path(out_dir) if out_dir else get_output_dir()
     base_out.mkdir(parents=True, exist_ok=True)
 
+    # ── TASK C: Link artifacts go into output_dir/links/ for deterministic discovery ──
+    links_dir = base_out / "links"
+    links_dir.mkdir(parents=True, exist_ok=True)
+
     gpkg_stem = gpkg.stem or "links"
-    osm_db = base_out / f"{gpkg_stem}_linkdb.sqlite"
-    gml_db = Path(gml_path) / "db_GML_Kacheln_centroids.sqlite" if gml_path else base_out / "db_GML_Kacheln_centroids.sqlite"
-    link_db = base_out / f"{gpkg_stem}_links.sqlite"
+    osm_db = links_dir / f"{gpkg_stem}_linkdb.sqlite"
+    gml_db = Path(gml_path) / "db_GML_Kacheln_centroids.sqlite" if gml_path else links_dir / "db_GML_Kacheln_centroids.sqlite"
+    link_db = links_dir / f"{gpkg_stem}_links.sqlite"
+
+    log_info(f"[Link][Artifacts] links_dir={links_dir}")
+    log_info(f"[Link][Artifacts] link_db target={link_db}")
 
     gpkg_mtime = _latest_mtime(gpkg)
     gml_mtime = _latest_mtime(gml_path, CITYGML_EXTS) if gml_path else None
@@ -364,8 +359,19 @@ def ensure_link_dbs(gpkg_path: str, gml_dir: str, out_dir: str | Path | None = N
 
     if _needs_refresh(gml_db, [gml_mtime]):
         if not gml_path:
-            raise FileNotFoundError("CityGML directory required to build GML centroid DB")
-        gml_db = _run_make_gml_centroids(gml_path, gml_db)
+            # No CityGML directory — try scene fallback (builds centroids from imported meshes)
+            if _HAVE_BPY:
+                log_info("[LinkDB] No CityGML dir; attempting scene-based centroid fallback")
+                try:
+                    _build_gml_from_scene(gml_db)
+                except Exception as ex:
+                    raise FileNotFoundError(
+                        f"CityGML directory not set and scene fallback failed: {ex}"
+                    )
+            else:
+                raise FileNotFoundError("CityGML directory required to build GML centroid DB (no Blender context)")
+        else:
+            gml_db = _run_make_gml_centroids(gml_path, gml_db)
     else:
         log_info(f"[LinkDB] GML centroid DB up-to-date: {gml_db}")
 
@@ -373,5 +379,22 @@ def ensure_link_dbs(gpkg_path: str, gml_dir: str, out_dir: str | Path | None = N
         _run_link_gml_to_osm(gml_db, osm_db, link_db, min_e=min_e, min_n=min_n)
     else:
         log_info(f"[LinkDB] Link DB up-to-date: {link_db}")
+
+    # ── TASK C: Verify artifact was created ──
+    if not link_db.exists():
+        raise RuntimeError(f"[Link][Artifacts] link DB was NOT created at: {link_db}")
+    file_size = link_db.stat().st_size
+    log_info(f"[Link][Artifacts] link_db verified: {link_db} size={file_size} bytes")
+
+    # ── TASK C: Persist links_db_path on scene settings ──
+    if _HAVE_BPY and bpy is not None:
+        try:
+            settings = getattr(bpy.context.scene, "m1dc_settings", None)
+            if settings is not None:
+                settings.links_db_path = str(link_db.resolve())
+                log_info(f"[Link][Artifacts] links_db_path set to: {settings.links_db_path}")
+                log_info(f"[Link][Artifacts] file exists: True size={file_size}")
+        except Exception as ex:
+            log_warn(f"[Link][Artifacts] Could not set links_db_path on settings: {ex}")
 
     return osm_db, gml_db, link_db

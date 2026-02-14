@@ -252,29 +252,18 @@ def _normalize_osm_id(value) -> str:
         return s
 
 
-def norm_source_tile(v) -> str:
-    """Normalize any source_tile representation to a stable key used everywhere.
-    Accepts: full path, filename with extension, or already-normalized stem.
-    """
-    if v is None:
-        return ""
-    import re
+# ── Key normalization: single source of truth (pipeline/linking/key_normalization.py) ──
+from .pipeline.linking.key_normalization import normalize_source_tile
 
-    s = str(v).strip()
-    if not s:
-        return ""
-    # Normalize path separators and drop directories
-    s = s.replace("\\", "/").split("/")[-1]
-    # Drop extension
-    s = Path(s).stem
-    # Drop Blender duplicate suffixes: ".001", ".002", ...
-    s = re.sub(r"\.\d{3}$", "", s)
-    return s
+
+def norm_source_tile(v) -> str:
+    """Thin wrapper delegating to the canonical normalize_source_tile."""
+    return normalize_source_tile(v)
 
 
 def _norm_source_tile(x: str) -> str:
     # Backwards-compat alias (legacy call sites)
-    return norm_source_tile(x)
+    return normalize_source_tile(x)
 
 
 def sanitize_attr_name(name: str) -> str:
@@ -1170,6 +1159,22 @@ def _load_link_lookup(s):
     mapping = {}
     # Prefer link DB
     link_db = getattr(s, "links_db_path", "")
+
+    # Auto-detect from output_dir/links/ if links_db_path is empty
+    if not link_db or not _is_link_db_valid(link_db):
+        out_dir = getattr(s, "output_dir", "").strip()
+        gpkg_stem = Path(getattr(s, "gpkg_path", "")).stem if getattr(s, "gpkg_path", "") else ""
+        if out_dir and gpkg_stem:
+            for candidate in [
+                Path(out_dir) / "links" / f"{gpkg_stem}_links.sqlite",
+                Path(out_dir) / f"{gpkg_stem}_links.sqlite",
+            ]:
+                if candidate.is_file():
+                    link_db = str(candidate.resolve())
+                    s.links_db_path = link_db
+                    log_info(f"[LINKMAP] Auto-detected link DB: {link_db}")
+                    break
+
     if link_db and _is_link_db_valid(link_db):
         p = Path(link_db)
         if p.exists():
@@ -1506,75 +1511,12 @@ def _copy_latest(src_path: str, latest_path: str, logger=print):
         logger(f"[MKDB][WARN] could not write latest: {e}")
 
 
-def _bbox_center_world(obj):
-    """
-    Compute world-space bounding box center for an object.
-    
-    Args:
-        obj: Blender object
-        
-    Returns:
-        mathutils.Vector: World-space center of bounding box
-    """
-    from mathutils import Vector
-    
-    if not obj or not hasattr(obj, 'bound_box'):
-        return Vector((0, 0, 0))
-    
-    # Compute center in local space
-    bbox = obj.bound_box
-    local_center = Vector((
-        sum(v[0] for v in bbox) / 8,
-        sum(v[1] for v in bbox) / 8,
-        sum(v[2] for v in bbox) / 8
-    ))
-    
-    # Transform to world space
-    world_center = obj.matrix_world @ local_center
-    return world_center
-
-
-def _terrain_recenter_xy_to_citygml(terrain_obj, gml_objs, log=print):
-    """
-    Recenter terrain XY to match CityGML tiles center (Z unchanged).
-    
-    Args:
-        terrain_obj: Terrain mesh object to move
-        gml_objs: List of CityGML tile objects (LoD2_* meshes)
-        log: Logging function
-    """
-    from mathutils import Vector
-    
-    if not terrain_obj:
-        log("[TERRAIN][RECENTER_XY][SKIP] reason=no_terrain_object")
-        return
-    
-    if not gml_objs or len(gml_objs) == 0:
-        log("[TERRAIN][RECENTER_XY][SKIP] reason=no_citygml_tiles")
-        return
-    
-    # Compute CityGML center as mean of all tile bbox centers
-    gml_centers = [_bbox_center_world(obj) for obj in gml_objs]
-    gml_center = Vector((
-        sum(c.x for c in gml_centers) / len(gml_centers),
-        sum(c.y for c in gml_centers) / len(gml_centers),
-        sum(c.z for c in gml_centers) / len(gml_centers)
-    ))
-    
-    # Compute terrain center
-    t_center = _bbox_center_world(terrain_obj)
-    
-    # Compute XY delta
-    dx = gml_center.x - t_center.x
-    dy = gml_center.y - t_center.y
-    
-    # Apply shift (XY only)
-    terrain_obj.location.x += dx
-    terrain_obj.location.y += dy
-    
-    # Log
-    log(f"[TERRAIN][RECENTER_XY] terrain={terrain_obj.name} dx={dx:.2f} dy={dy:.2f}")
-    log(f"[TERRAIN][RECENTER_XY] gml_center=({gml_center.x:.2f},{gml_center.y:.2f}) t_center=({t_center.x:.2f},{t_center.y:.2f}) new_loc=({terrain_obj.location.x:.2f},{terrain_obj.location.y:.2f},{terrain_obj.location.z:.2f})")
+# REMOVED: _bbox_center_world and _terrain_recenter_xy_to_citygml
+# These were dead code (BBox-Center heuristic replaced by Min-Corner Align operator).
+# Equivalent stable logic lives in pipeline/terrain/terrain_validation.py:
+#   - bbox_world(), extent_xy_minmax() for bbox queries
+#   - compute_xy_shift_min_corner() for deterministic alignment
+#   - apply_terrain_xy_offset() for applying the shift
 
 
 # mkdb schema version
@@ -4043,69 +3985,113 @@ def _load_gpkg_and_link(s, table_hint="osm_multipolygons"):
 def _link_gpkg_to_citygml(s):
     """
     Link GPKG features to CityGML buildings using centroid matching.
-    
+
     Returns:
         tuple: (ok, linked_count, confidences, no_match_reasons, tiles_count, samples)
     """
     try:
         from .pipeline.linking.linking_cache import ensure_link_dbs
+        from .pipeline.linking.mesh_discovery import collect_citygml_meshes
         from .utils.logging_system import log_info, log_warn, log_error
-        
+
         gpkg_path = getattr(s, "gpkg_path", "").strip()
-        citygml_folder = getattr(s, "citygml_folder", "").strip()
+        # FIX: was reading non-existent 'citygml_folder'; correct property is 'citygml_dir'
+        citygml_dir = getattr(s, "citygml_dir", "").strip()
         output_dir = getattr(s, "output_dir", "").strip()
-        
+
+        # ── Proof logging ──
+        log_info(f"[Link] Precondition check:")
+        log_info(f"[Link]   gpkg_path       = {gpkg_path!r}")
+        log_info(f"[Link]   citygml_dir     = {citygml_dir!r}")
+        log_info(f"[Link]   os.path.isdir   = {os.path.isdir(citygml_dir) if citygml_dir else 'N/A'}")
+        log_info(f"[Link]   output_dir      = {output_dir!r}")
+
         if not gpkg_path or not os.path.isfile(gpkg_path):
-            log_error("[Link] No valid GPKG path specified")
+            log_error(f"[Link] No valid GPKG path specified (gpkg_path={gpkg_path!r})")
             return False, 0, [], [], 0, []
-        
-        if not citygml_folder or not os.path.isdir(citygml_folder):
-            log_error("[Link] No valid CityGML folder specified")
-            return False, 0, [], [], 0, []
-        
+
+        # Validate CityGML dir — accept trailing slash / backslash, normalize
+        if citygml_dir:
+            citygml_dir = os.path.normpath(citygml_dir)
+
+        # Discover CityGML meshes already imported into scene
+        scene_meshes = collect_citygml_meshes(log_prefix="[Link][Discovery]")
+        log_info(f"[Link] Scene CityGML meshes: {len(scene_meshes)}")
+
+        if not citygml_dir or not os.path.isdir(citygml_dir):
+            if scene_meshes:
+                log_warn(
+                    f"[Link] citygml_dir is not a valid directory ({citygml_dir!r}), "
+                    f"but {len(scene_meshes)} CityGML meshes are in scene — proceeding with scene-based linking."
+                )
+                # Set citygml_dir to None so ensure_link_dbs uses scene fallback
+                citygml_dir = None
+            else:
+                log_error(
+                    f"[Link] No valid CityGML folder specified ({citygml_dir!r}) "
+                    f"and no CityGML meshes found in scene."
+                )
+                return False, 0, [], [], 0, []
+
         # Run linking pipeline
-        log_info(f"[Link] Linking GPKG → CityGML\n  GPKG: {gpkg_path}\n  GML: {citygml_folder}")
-        osm_db, gml_db, link_db = ensure_link_dbs(gpkg_path, citygml_folder, output_dir)
-        
-        # Store link DB path in settings
-        s.links_db_path = str(link_db)
-        
+        log_info(f"[Link] Linking GPKG → CityGML\n  GPKG: {gpkg_path}\n  GML dir: {citygml_dir}")
+        osm_db, gml_db, link_db = ensure_link_dbs(gpkg_path, citygml_dir or "", output_dir)
+
+        # Store link DB path in settings (ensure_link_dbs also sets it, but be explicit)
+        link_db_str = str(link_db.resolve())
+        s.links_db_path = link_db_str
+        log_info(f"[Link][Artifacts] links_db_path set to: {link_db_str}")
+        log_info(f"[Link][Artifacts] file exists: {link_db.exists()} size={link_db.stat().st_size if link_db.exists() else 0}")
+
         # Count linked buildings from link database
         import sqlite3
         linked_count = 0
         confidences = []
         tiles_count = 0
-        
+
         if link_db.exists():
             try:
                 conn = sqlite3.connect(str(link_db))
                 cur = conn.cursor()
-                
+
                 # Count links with confidence scores
                 cur.execute("SELECT COUNT(*), AVG(COALESCE(confidence, 0.0)) FROM gml_osm_links")
                 row = cur.fetchone()
                 linked_count = row[0] if row else 0
                 avg_conf = row[1] if row and row[1] else 0.0
-                
+
                 # Get confidence distribution
                 cur.execute("SELECT confidence FROM gml_osm_links WHERE confidence IS NOT NULL")
                 confidences = [r[0] for r in cur.fetchall()]
-                
+
                 # Count distinct tiles
-                cur.execute("SELECT COUNT(DISTINCT source_tile) FROM gml_centroids")
-                tiles_row = cur.fetchone()
-                tiles_count = tiles_row[0] if tiles_row else 0
-                
+                try:
+                    cur.execute("SELECT COUNT(DISTINCT source_tile) FROM gml_centroids")
+                    tiles_row = cur.fetchone()
+                    tiles_count = tiles_row[0] if tiles_row else 0
+                except Exception:
+                    # gml_centroids may be in a separate DB
+                    tiles_count = 0
+
                 conn.close()
-                log_info(f"[Link] Linked {linked_count} buildings across {tiles_count} tiles (avg confidence: {avg_conf:.3f})")
+                log_info(
+                    f"[Link] Linked {linked_count} buildings across {tiles_count} tiles "
+                    f"(avg confidence: {avg_conf:.3f})"
+                )
             except Exception as ex:
                 log_warn(f"[Link] Could not query link statistics: {ex}")
-        
+        else:
+            log_error(f"[Link][Artifacts] Link DB does NOT exist at {link_db_str}")
+            return False, 0, [], [], 0, []
+
         # Update settings
-        s.step2_linked_objects = linked_count
-        
+        try:
+            s.step2_linked_objects = linked_count
+        except Exception:
+            pass
+
         return True, linked_count, confidences, [], tiles_count, []
-        
+
     except Exception as ex:
         from .utils.logging_system import log_error
         log_error(f"[Link] Linking failed: {ex}")

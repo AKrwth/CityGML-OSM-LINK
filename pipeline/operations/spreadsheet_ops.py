@@ -1,13 +1,20 @@
 """
 Spreadsheet operators: Building table/spreadsheet UI operations.
 
-NOTE: These operators require supporting functions from ops.py that handle
-spreadsheet data management. This is a minimal extraction - full functionality
-requires refactoring spreadsheet state management into a separate module.
+Imports spreadsheet data management from pipeline.spreadsheet.spreadsheet_core
+instead of reaching into ops.py directly.
 """
 import bpy
 from bpy.types import Operator
 from bpy.props import IntProperty, BoolProperty, StringProperty, EnumProperty
+
+# Centralised spreadsheet helpers (extracted from ops.py)
+from ..spreadsheet.spreadsheet_core import (
+    build_spreadsheet_rows,
+    perform_face_sync,
+    select_faces_by_building_idx,
+    get_active_mesh,
+)
 
 
 def _settings(context):
@@ -26,16 +33,8 @@ class M1DC_OT_SpreadsheetReload(Operator):
             self.report({"ERROR"}, "Scene settings missing")
             return {"CANCELLED"}
         
-        # NOTE: _build_spreadsheet_rows is defined in ops.py
-        # This would need to be refactored into a separate spreadsheet module
         try:
-            from ... import ops
-            _build_spreadsheet_rows = getattr(ops, "_build_spreadsheet_rows", None)
-            if not _build_spreadsheet_rows:
-                self.report({"ERROR"}, "Spreadsheet logic not available")
-                return {"CANCELLED"}
-            
-            ok = _build_spreadsheet_rows(context, s)
+            ok = build_spreadsheet_rows(context, s)
             if not ok:
                 self.report({"ERROR"}, s.spreadsheet_last_error or "Reload failed")
                 return {"CANCELLED"}
@@ -70,10 +69,7 @@ class M1DC_OT_SpreadsheetColumnsSelect(Operator):
 
         # Rebuild rows so dynamic columns reflect the new selection
         try:
-            from ... import ops
-            _build_spreadsheet_rows = getattr(ops, "_build_spreadsheet_rows", None)
-            if _build_spreadsheet_rows:
-                _build_spreadsheet_rows(context, s)
+            build_spreadsheet_rows(context, s)
         except Exception:
             pass
 
@@ -91,13 +87,7 @@ class M1DC_OT_SpreadsheetSyncFromSelection(Operator):
             return {"CANCELLED"}
 
         try:
-            from ... import ops
-            _perform_face_sync = getattr(ops, "_perform_face_sync", None)
-            if not _perform_face_sync:
-                self.report({"WARNING"}, "Face sync logic not available")
-                return {"CANCELLED"}
-            
-            if not _perform_face_sync(context, s):
+            if not perform_face_sync(context, s):
                 self.report({"WARNING"}, "No active/selected face with building_idx")
                 return {"CANCELLED"}
             self.report({"INFO"}, "Synced from selection")
@@ -122,25 +112,16 @@ class M1DC_OT_SpreadsheetSelectRow(Operator):
             return {"CANCELLED"}
 
         try:
-            from ... import ops
-            _get_active_mesh = getattr(ops, "_get_active_mesh", None)
-            _build_spreadsheet_rows = getattr(ops, "_build_spreadsheet_rows", None)
-            _select_faces_by_building_idx = getattr(ops, "_select_faces_by_building_idx", None)
-            
-            if not all([_get_active_mesh, _build_spreadsheet_rows, _select_faces_by_building_idx]):
-                self.report({"ERROR"}, "Required spreadsheet functions not available")
-                return {"CANCELLED"}
-            
-            obj, _ = _get_active_mesh(context)
+            obj, _ = get_active_mesh(context)
             if obj is None:
                 return {"CANCELLED"}
 
             cached_obj = getattr(s, "spreadsheet_cached_obj", "")
             if cached_obj != obj.name or len(s.spreadsheet_rows) == 0:
-                _build_spreadsheet_rows(context, s)
+                build_spreadsheet_rows(context, s)
 
             if self.value:
-                _select_faces_by_building_idx(context, obj, self.building_idx)
+                select_faces_by_building_idx(context, obj, self.building_idx)
 
             s.spreadsheet_silent = True
             try:
@@ -170,10 +151,7 @@ class M1DC_OT_SpreadsheetDeferredSync(Operator):
             return {"CANCELLED"}
         
         try:
-            from ... import ops
-            _perform_face_sync = getattr(ops, "_perform_face_sync", None)
-            if _perform_face_sync:
-                _perform_face_sync(context, s)
+            perform_face_sync(context, s)
         except Exception:
             pass
         

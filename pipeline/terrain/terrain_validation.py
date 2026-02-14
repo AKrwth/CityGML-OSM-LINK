@@ -543,7 +543,13 @@ def validate_and_decide() -> Tuple[str, Dict]:
     log_info(f"[VALIDATION] reason={diag['reason']}")
     log_info(f"[VALIDATION] ═══════════════════════════════════")
     
-    # [PHASE 6] Acceptance signal for terrain validation
+    # [ACCEPTANCE] Structured acceptance test logging
+    log_info(f"[ACCEPTANCE][TERRAIN] scale={diag.get('terrain_scale', '?')}")
+    log_info(f"[ACCEPTANCE][TERRAIN] extent_wh=({terrain_w:.2f}m, {terrain_h:.2f}m)")
+    log_info(f"[ACCEPTANCE][GML] extent_wh=({gml_w:.2f}m, {gml_h:.2f}m)")
+    log_info(f"[ACCEPTANCE][BBOX] intersection_xy={intersection_xy}")
+    log_info(f"[ACCEPTANCE][BBOX] center_dist_xy={center_dist_xy:.2f}m")
+    log_info(f"[ACCEPTANCE][BBOX] cover_x={cover_x:.3f} cover_y={cover_y:.3f}")
     print(f"[ACCEPT] terrain_validation_ok=True decision={decision}")
 
     return (decision, diag)
@@ -640,7 +646,8 @@ def compute_xy_shift_min_corner(terrain, gml_objs: List) -> Tuple[float, float]:
     """
     Compute XY shift to align terrain min-corner with CityGML min-corner.
 
-    NOT USED IN MAIN PIPELINE (optional debug/future use).
+    Used by M1DC_OT_TerrainAlignXYMinCorner operator.
+    Stable regardless of partial loads, centering, or tile count.
 
     Args:
         terrain: Terrain object

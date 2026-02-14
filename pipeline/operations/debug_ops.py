@@ -342,7 +342,7 @@ class M1DC_OT_DebugGPKGTableInfo(Operator):
 
 
 class M1DC_OT_DebugLinkKeyIdentity(Operator):
-    """Debug link key identity (checks mesh attrs against link DB keys)"""
+    """Debug link key identity: full B1 (Blender keys), B2 (DB keys), B3 (lookup proof)"""
     bl_idname = "m1dc.debug_link_key_identity"
     bl_label = "Debug Link Key Identity"
     bl_options = {"REGISTER", "UNDO"}
@@ -355,25 +355,165 @@ class M1DC_OT_DebugLinkKeyIdentity(Operator):
             return {"CANCELLED"}
 
         mesh = obj.data
+        face_count = len(mesh.polygons)
+
+        # ── Canonical normalization from single source of truth ──
+        try:
+            from ..linking.key_normalization import normalize_source_tile
+        except ImportError:
+            self.report({"ERROR"}, "key_normalization module not found")
+            return {"CANCELLED"}
+
         try:
             from ... import ops
-            norm_source_tile = getattr(ops, "norm_source_tile", None)
             _load_link_lookup = getattr(ops, "_load_link_lookup", None)
-            if not all([norm_source_tile, _load_link_lookup]):
-                self.report({"ERROR"}, "Link diagnostics not available")
-                return {"CANCELLED"}
-            
-            src = norm_source_tile(obj.get("source_tile") or obj.name)
-            link_map = _load_link_lookup(s) if s else {}
-            
-            # Print debug info (implementation delegated to ops.py)
-            print("[M1DC LinkKey] OBJ:", obj.name, "source_tile:", src)
-            print("[M1DC LinkKey] link_map size:", len(link_map))
-            self.report({"INFO"}, "Printed link key identity to console")
+        except Exception:
+            _load_link_lookup = None
+
+        # ====================================================================
+        # B1 — Blender-side keys
+        # ====================================================================
+        print("\n" + "=" * 70)
+        print("[B1] BLENDER-SIDE KEYS")
+        print("=" * 70)
+
+        raw_tile = obj.get("source_tile", obj.name)
+        norm_tile = normalize_source_tile(raw_tile)
+        print(f"  Active mesh:  {obj.name}")
+        print(f"  source_tile RAW:  {raw_tile!r}")
+        print(f"  source_tile NORM: {norm_tile!r}")
+
+        # Find building_idx attribute
+        idx_attr = None
+        for cand in ("gml_building_idx", "gml__building_idx", "building_idx"):
+            a = mesh.attributes.get(cand)
+            if a and a.domain == "FACE" and a.data_type == "INT" and len(a.data) == face_count:
+                idx_attr = a
+                break
+
+        if idx_attr is None:
+            print("  building_idx: MISSING (no FACE/INT attribute found)")
+            self.report({"WARNING"}, "No building_idx attribute on active mesh")
             return {"FINISHED"}
-        except Exception as ex:
-            self.report({"ERROR"}, f"Link key identity check failed: {ex}")
-            return {"CANCELLED"}
+
+        # Collect unique building indices
+        unique_bidx = set()
+        for fi in range(face_count):
+            try:
+                unique_bidx.add(int(idx_attr.data[fi].value))
+            except Exception:
+                pass
+
+        sorted_bidx = sorted(unique_bidx)
+        print(f"  building_idx attr: {idx_attr.name} (len={len(idx_attr.data)})")
+        print(f"  min_bidx={min(sorted_bidx) if sorted_bidx else 'N/A'} max_bidx={max(sorted_bidx) if sorted_bidx else 'N/A'}")
+        print(f"  unique_count={len(sorted_bidx)} sample_indices={sorted_bidx[:10]}")
+
+        # Composed keys (first 10)
+        blender_keys = [(norm_tile, bidx) for bidx in sorted_bidx[:10]]
+        print(f"  Composed keys (first 10): {blender_keys}")
+
+        # Sample from up to 3 OTHER tiles for cross-check
+        try:
+            from ..linking.mesh_discovery import collect_citygml_meshes
+            all_meshes = collect_citygml_meshes(log_prefix="[B1][Sample]")
+            other_tiles = []
+            for m_obj in all_meshes:
+                t = normalize_source_tile(m_obj.get("source_tile", m_obj.name))
+                if t != norm_tile and t not in [x[0] for x in other_tiles]:
+                    other_tiles.append((t, m_obj.name))
+                if len(other_tiles) >= 3:
+                    break
+            if other_tiles:
+                print(f"  Other tiles (sample 3): {other_tiles}")
+        except Exception:
+            pass
+
+        # ====================================================================
+        # B2 — DB-side keys
+        # ====================================================================
+        print("\n" + "=" * 70)
+        print("[B2] DB-SIDE KEYS")
+        print("=" * 70)
+
+        link_map = {}
+        if _load_link_lookup and s:
+            link_map = _load_link_lookup(s) or {}
+
+        print(f"  link_map rows loaded: {len(link_map)}")
+
+        if link_map:
+            db_tiles = {}
+            for k in link_map:
+                db_tiles[k[0]] = db_tiles.get(k[0], 0) + 1
+            print(f"  Distinct tiles in DB: {len(db_tiles)}")
+            for tn, tc in sorted(db_tiles.items())[:5]:
+                print(f"    tile={tn!r} entries={tc}")
+
+            # Keys for active tile
+            active_tile_keys = [k for k in link_map if k[0] == norm_tile]
+            print(f"  Keys for active tile ({norm_tile!r}): {len(active_tile_keys)}")
+            for k in active_tile_keys[:10]:
+                v = link_map[k]
+                print(f"    DB key={k!r} osm_id={v.get('osm_id','?')} conf={v.get('link_conf',0):.3f}")
+
+            if not active_tile_keys:
+                # Try fuzzy match to diagnose mismatch
+                print("  [DIAG] No exact tile match. Attempting fuzzy match...")
+                for db_tile in sorted(db_tiles.keys())[:10]:
+                    print(f"    DB tile: {db_tile!r}")
+        else:
+            print("  link_map is EMPTY — run 'Link CityGML ↔ OSM' first")
+
+        # ====================================================================
+        # B3 — Actual lookup proof
+        # ====================================================================
+        print("\n" + "=" * 70)
+        print("[B3] LOOKUP PROOF (first 5 faces with building_idx)")
+        print("=" * 70)
+
+        hits = 0
+        misses = 0
+        probed = 0
+        seen_bidx = set()
+
+        for fi in range(face_count):
+            if probed >= 5:
+                break
+            try:
+                bidx = int(idx_attr.data[fi].value)
+            except Exception:
+                continue
+            if bidx in seen_bidx:
+                continue
+            seen_bidx.add(bidx)
+            probed += 1
+
+            key = (norm_tile, bidx)
+            row = link_map.get(key)
+            if row:
+                hits += 1
+                print(
+                    f"  face[{fi}] bidx={bidx} key={key!r} -> HIT "
+                    f"osm_id={row.get('osm_id','?')} "
+                    f"conf={row.get('link_conf',0):.3f} "
+                    f"dist={row.get('link_dist_m',0):.2f} "
+                    f"iou={row.get('link_iou',0):.3f}"
+                )
+            else:
+                misses += 1
+                print(f"  face[{fi}] bidx={bidx} key={key!r} -> MISS")
+
+        # Counters
+        print(f"\n  SUMMARY: probed={probed} HITs={hits} MISSes={misses}")
+        if link_map and hits == 0:
+            print("  [ALERT] 0 HITs — likely key mismatch between Blender and DB!")
+            print("  Check if Blender source_tile normalization matches DB source_tile.")
+
+        print("=" * 70 + "\n")
+
+        self.report({"INFO"}, f"Link Key Identity: {hits} HITs / {misses} MISSes from {probed} probes")
+        return {"FINISHED"}
 
 
 class M1DC_OT_DebugBuildingIdxStats(Operator):

@@ -237,43 +237,11 @@ class M1DC_OT_ImportDGMTerrain(Operator):
                     # Non-fatal, continue with import
             
             # PHASE 4: Terrain XY Recenter to CityGML
+            # REMOVED: BBox-Center-Recenter heuristic was unstable (drift from
+            # partial loads, CityGML centering, anisotropic scale).
+            # Use the explicit "Align Terrain XY (Min-Corner)" operator instead.
             if terrain_obj:
-                try:
-                    from mathutils import Vector
-                    
-                    # Find all CityGML tile objects
-                    gml_objs = [obj for obj in bpy.data.objects 
-                               if obj.type == 'MESH' and obj.name.startswith("LoD2_")]
-                    
-                    if not gml_objs:
-                        print("[TERRAIN][RECENTER_XY][SKIP] reason=no_citygml_tiles_found")
-                    else:
-                        # Compute bbox centers (world coords)
-                        def bbox_center_world(obj):
-                            cs = [obj.matrix_world @ Vector(c) for c in obj.bound_box]
-                            mn = Vector((min(v.x for v in cs), min(v.y for v in cs), min(v.z for v in cs)))
-                            mx = Vector((max(v.x for v in cs), max(v.y for v in cs), max(v.z for v in cs)))
-                            return (mn + mx) * 0.5
-                        
-                        gml_center = sum((bbox_center_world(o) for o in gml_objs), Vector()) / len(gml_objs)
-                        trn_center = bbox_center_world(terrain_obj)
-                        
-                        dx = gml_center.x - trn_center.x
-                        dy = gml_center.y - trn_center.y
-                        
-                        # Apply XY translation via matrix_world
-                        mw = terrain_obj.matrix_world.copy()
-                        mw.translation.x += dx
-                        mw.translation.y += dy
-                        terrain_obj.matrix_world = mw
-                        
-                        new_loc = terrain_obj.location
-                        print(f"[TERRAIN] recenter_xy applied dx={dx:.2f} dy={dy:.2f} terrain={terrain_obj.name} new_loc=({new_loc.x:.2f},{new_loc.y:.2f},{new_loc.z:.2f})")
-                
-                except Exception as recenter_ex:
-                    log_warn(f"[Pipeline] Terrain XY recenter failed: {recenter_ex}")
-                    traceback.print_exc()
-                    # Non-fatal, continue
+                log_info("[Pipeline] PHASE 4 recenter_xy SKIPPED (removed: use Min-Corner Align operator)")
 
             # PHASE 5: Geometry tripwires (post-import checks)
             try:
@@ -653,6 +621,138 @@ class M1DC_OT_TerrainAlignToCity(Operator):
         return {"FINISHED"}
 
 
+# ============================================================================
+# NEW: Surgical terrain alignment operators (deterministic, no heuristics)
+# ============================================================================
+
+class M1DC_OT_TerrainBakeScale(Operator):
+    """
+    Apply (bake) terrain scale to (1,1,1).
+
+    Anisotropic scale (e.g. 0.82, 0.71, 1.0) causes XY drift.
+    This operator applies the current scale into the mesh data,
+    resetting scale to (1,1,1) so all subsequent alignment is stable.
+
+    Must be run BEFORE any XY alignment.
+    """
+    bl_idname = "m1dc.terrain_bake_scale"
+    bl_label = "Terrain: Bake Scale to (1,1,1)"
+    bl_description = "Apply terrain scale into mesh data (prevents XY drift from anisotropic scale)"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        from ...pipeline.terrain.terrain_validation import get_terrain_object, is_anisotropic_scale
+
+        terrain = get_terrain_object()
+        if not terrain:
+            self.report({"ERROR"}, "Terrain not found (checked m1dc_role, TERRAIN collection, legacy names)")
+            return {"CANCELLED"}
+
+        # Check if scale is already (1,1,1)
+        if not any(abs(s - 1.0) > 1e-6 for s in terrain.scale):
+            log_info(f"[TerrainBakeScale] scale already (1,1,1) for {terrain.name}, nothing to do")
+            self.report({"INFO"}, f"Terrain '{terrain.name}' scale already (1,1,1) ✓")
+            return {"FINISHED"}
+
+        old_scale = tuple(terrain.scale)
+        log_info(f"[TerrainBakeScale] BEFORE: {terrain.name} scale={old_scale}")
+
+        # Ensure object mode
+        if bpy.context.mode != 'OBJECT':
+            bpy.ops.object.mode_set(mode='OBJECT')
+
+        # Select only terrain, make active
+        bpy.ops.object.select_all(action='DESELECT')
+        terrain.select_set(True)
+        bpy.context.view_layer.objects.active = terrain
+
+        # Apply scale (bake into mesh)
+        bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
+
+        # Force depsgraph update so bbox is fresh
+        bpy.context.view_layer.update()
+
+        new_scale = tuple(terrain.scale)
+        log_info(f"[TerrainBakeScale] AFTER: {terrain.name} scale={new_scale}")
+        log_info(f"[TerrainBakeScale] ✓ Scale baked: {old_scale} → {new_scale}")
+
+        self.report({"INFO"}, f"Scale baked: {old_scale} → (1,1,1) ✓")
+        return {"FINISHED"}
+
+
+class M1DC_OT_TerrainAlignXYMinCorner(Operator):
+    """
+    Align terrain XY to CityGML using min-corner match.
+
+    Deterministic alignment: shifts terrain so its min XY corner
+    matches the CityGML min XY corner. This is stable regardless
+    of partial loads, centering, or tile count.
+
+    Prerequisites:
+    - Terrain must have scale (1,1,1) — run "Bake Scale" first.
+    - CityGML tiles must be loaded.
+    """
+    bl_idname = "m1dc.terrain_align_xy_min_corner"
+    bl_label = "Terrain: Align XY (Min-Corner)"
+    bl_description = "Align terrain to CityGML using stable min-corner matching"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        from ...pipeline.terrain.terrain_validation import (
+            get_terrain_object, collect_gml_objects,
+            compute_xy_shift_min_corner, apply_terrain_xy_offset,
+            is_anisotropic_scale, extent_xy, extent_xy_minmax,
+        )
+
+        terrain = get_terrain_object()
+        if not terrain:
+            self.report({"ERROR"}, "Terrain not found")
+            return {"CANCELLED"}
+
+        gml_objs = collect_gml_objects()
+        if not gml_objs:
+            self.report({"ERROR"}, "No CityGML objects found")
+            return {"CANCELLED"}
+
+        # GUARD: Warn if scale is not (1,1,1)
+        if any(abs(s - 1.0) > 1e-6 for s in terrain.scale):
+            log_warn(f"[MinCornerAlign] terrain scale={tuple(terrain.scale)} is not (1,1,1) — bake scale first!")
+            self.report({"WARNING"}, "Terrain scale ≠ (1,1,1). Run 'Bake Scale' first for stable alignment.")
+            # Continue anyway but log warning
+
+        # Compute shift
+        dx, dy = compute_xy_shift_min_corner(terrain, gml_objs)
+
+        if abs(dx) < 0.01 and abs(dy) < 0.01:
+            log_info(f"[MinCornerAlign] Already aligned: dx={dx:.3f}m, dy={dy:.3f}m")
+            self.report({"INFO"}, f"Already aligned (dx={dx:.2f}m, dy={dy:.2f}m) ✓")
+            return {"FINISHED"}
+
+        # Apply shift
+        apply_terrain_xy_offset(terrain, dx, dy)
+
+        # Acceptance test logging
+        t_w, t_h = extent_xy(terrain)
+        g_minx = g_miny = 1e18
+        g_maxx = g_maxy = -1e18
+        for o in gml_objs:
+            minx, maxx, miny, maxy = extent_xy_minmax(o)
+            g_minx = min(g_minx, minx)
+            g_maxx = max(g_maxx, maxx)
+            g_miny = min(g_miny, miny)
+            g_maxy = max(g_maxy, maxy)
+        g_w = g_maxx - g_minx
+        g_h = g_maxy - g_miny
+
+        log_info(f"[ACCEPTANCE][TERRAIN] scale={tuple(terrain.scale)}")
+        log_info(f"[ACCEPTANCE][TERRAIN] extent_wh=({t_w:.2f}m, {t_h:.2f}m)")
+        log_info(f"[ACCEPTANCE][GML] extent_wh=({g_w:.2f}m, {g_h:.2f}m)")
+        log_info(f"[ACCEPTANCE][ALIGN] dx={dx:.2f}m dy={dy:.2f}m")
+
+        self.report({"INFO"}, f"Aligned: dx={dx:.2f}m, dy={dy:.2f}m ✓")
+        return {"FINISHED"}
+
+
 # Operator registration
 CLASSES = [
     M1DC_OT_ImportBasemapTerrain,
@@ -662,6 +762,8 @@ CLASSES = [
     M1DC_OT_TerrainAlignmentCheck,
     M1DC_OT_TerrainZAlignLowMedian,
     M1DC_OT_TerrainAlignToCity,
+    M1DC_OT_TerrainBakeScale,
+    M1DC_OT_TerrainAlignXYMinCorner,
 ]
 
 

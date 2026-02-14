@@ -373,7 +373,12 @@ def iter_citygml_buildings(obj: bpy.types.Object) -> Dict[Tuple[str, int], Dict[
         return {}
 
     result: Dict[Tuple[str, int], Dict[str, object]] = {}
-    src = obj.get("source_tile", obj.name)
+    # Canonical normalization (single source of truth)
+    try:
+        from ..linking.key_normalization import normalize_source_tile
+        src = normalize_source_tile(obj.get("source_tile", obj.name))
+    except ImportError:
+        src = obj.get("source_tile", obj.name)
 
     def world_vert(idx):
         v = mesh.vertices[idx]
@@ -570,11 +575,13 @@ def import_citygml_folder(
             # Tag and organize new objects
             for obj in new_objs:
                 # Normalize to stable key used by DB/materialize lookups
+                # Uses single source of truth: pipeline.linking.key_normalization
                 try:
+                    from ..linking.key_normalization import normalize_source_tile
+                    obj["source_tile"] = normalize_source_tile(f.name)
+                except Exception:
                     from pathlib import Path
                     obj["source_tile"] = Path(str(f.name)).stem
-                except Exception:
-                    obj["source_tile"] = str(f.name)
                 obj["m1dc_tile_filename"] = str(f.name)
                 obj["m1dc_metadata_name"] = str(tile_contexts[f.name]["metadata_name"])
                 obj["m1dc_lower_corner"] = str(tile_contexts[f.name]["lower_corner"])

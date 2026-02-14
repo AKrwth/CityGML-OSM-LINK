@@ -50,11 +50,25 @@ def _settings(context):
 
 
 def _aggregate_citygml_buildings():
-    """Aggregate CityGML building data from scene (for fallback export)."""
-    city_buildings = []
-    tile_count = 0
-    # Placeholder - actual implementation would scan CityGML objects
-    return city_buildings, tile_count
+    """Aggregate CityGML building data from scene using centralised mesh discovery."""
+    try:
+        from ..linking.mesh_discovery import collect_citygml_meshes, collect_building_candidates
+        mesh_objs = collect_citygml_meshes(log_prefix="[LinkExport][Discovery]")
+        candidates = collect_building_candidates(mesh_objs, log_prefix="[LinkExport][Discovery]")
+
+        city_buildings = []
+        tile_set = set()
+        for entry in candidates:
+            tile_set.add(entry["source_tile"])
+            city_buildings.append({
+                "key": (entry["source_tile"], entry["building_idx"]),
+                "obj": entry["obj"],
+                "faces": entry["face_indices"],
+            })
+        return city_buildings, len(tile_set)
+    except Exception as ex:
+        log_warn(f"[LinkExport][Discovery] Fallback aggregation failed: {ex}")
+        return [], 0
 
 
 class M1DC_OT_ExportLinkMapping(Operator):

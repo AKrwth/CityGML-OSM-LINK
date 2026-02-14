@@ -49,27 +49,66 @@ class M1DC_OT_LinkCityGMLtoOSM(Operator):
             self.report({"ERROR"}, "No GeoPackage file specified or not found.")
             return {"CANCELLED"}
 
+        # ── Validate CityGML dir with proof logging ──
+        citygml_dir = getattr(s, "citygml_dir", "").strip()
+        if citygml_dir:
+            citygml_dir = os.path.normpath(citygml_dir)
+        log_info(f"[Link] citygml_dir={citygml_dir!r} isdir={os.path.isdir(citygml_dir) if citygml_dir else False}")
+
+        # Check scene meshes as fallback
         try:
-            # Import linking function from ops.py
+            from ..linking.mesh_discovery import collect_citygml_meshes
+            scene_meshes = collect_citygml_meshes(log_prefix="[Link][Discovery]")
+        except Exception:
+            scene_meshes = []
+        log_info(f"[Link] Scene CityGML meshes: {len(scene_meshes)}")
+
+        if not citygml_dir and not scene_meshes:
+            self.report({"ERROR"}, "No CityGML folder set and no CityGML meshes in scene.")
+            return {"CANCELLED"}
+
+        try:
             from ... import ops
             _link_gpkg_to_citygml = ops._link_gpkg_to_citygml
-            
-            log_info("Starting explicit linking: CityGML ↔ OSM")
+
+            log_info("[Link] Starting explicit linking: CityGML ↔ OSM")
             ok2, linked, confidences, no_match_reasons, tiles_count, samples = _link_gpkg_to_citygml(s)
-            
+
             if not ok2:
-                self.report({"WARNING"}, "Linking completed with warnings or no matches.")
-                log_warn(f"Linking returned ok2={ok2}")
-                return {"FINISHED"}
+                self.report({"ERROR"}, "Linking failed — check console for details.")
+                log_error(f"[Link] Linking returned ok2=False — CANCELLED")
+                return {"CANCELLED"}
+
+            # Verify link DB was created — also check links/ subdirectory
+            link_db = getattr(s, "links_db_path", "")
+            if not link_db or not os.path.isfile(link_db):
+                # Try auto-detect from output_dir/links/
+                from pathlib import Path as _P
+                out_dir = _P(getattr(s, "output_dir", "").strip() or "")
+                links_dir = out_dir / "links"
+                gpkg_stem = _P(getattr(s, "gpkg_path", "")).stem if getattr(s, "gpkg_path", "") else ""
+                candidate = links_dir / f"{gpkg_stem}_links.sqlite" if gpkg_stem and links_dir.is_dir() else None
+                if candidate and candidate.is_file():
+                    s.links_db_path = str(candidate.resolve())
+                    link_db = s.links_db_path
+                    log_info(f"[Link][Artifacts] Auto-detected link DB in links/: {link_db}")
+                else:
+                    self.report({"ERROR"}, f"Link DB not created at: {link_db}")
+                    log_error(f"[Link][Artifacts] Link DB missing after linking: {link_db!r}")
+                    return {"CANCELLED"}
+
+            # Final artifact proof
+            db_size = os.path.getsize(link_db)
+            log_info(f"[Link][Artifacts] links_db_path set to: {link_db}")
+            log_info(f"[Link][Artifacts] file exists: True size={db_size}")
 
             # Display summary
             summary_lines = [
                 f"Linking Summary:",
                 f"  Tiles: {tiles_count}",
                 f"  Linked buildings: {linked}",
-                f"  Unmatched buildings: {s.status_citygml_buildings - linked if s.status_citygml_buildings else 0}",
             ]
-            
+
             if confidences:
                 min_conf = min(confidences)
                 max_conf = max(confidences)
@@ -77,14 +116,19 @@ class M1DC_OT_LinkCityGMLtoOSM(Operator):
                 summary_lines.extend([
                     f"  Confidence (min/max/avg): {min_conf:.3f} / {max_conf:.3f} / {avg_conf:.3f}",
                 ])
-            
+
             summary_text = "\n".join(summary_lines)
-            s.status_text = summary_text
+            try:
+                s.status_text = summary_text
+            except Exception:
+                pass
             self.report({"INFO"}, summary_text)
-            log_info(f"Linking complete: {linked} buildings linked")
-            
+            log_info(f"[Link] Complete: {linked} buildings linked, DB={link_db}")
+
             return {"FINISHED"}
         except Exception as ex:
-            log_error(f"Linking failed: {ex}")
+            log_error(f"[Link] Linking failed: {ex}")
+            import traceback
+            traceback.print_exc()
             self.report({"ERROR"}, f"Linking failed: {ex}")
             return {"CANCELLED"}

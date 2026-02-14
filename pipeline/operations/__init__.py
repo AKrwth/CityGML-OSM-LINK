@@ -44,6 +44,8 @@ from .terrain_ops import (
     M1DC_OT_TerrainAlignmentCheck,
     M1DC_OT_TerrainZAlignLowMedian,
     M1DC_OT_TerrainAlignToCity,
+    M1DC_OT_TerrainBakeScale,
+    M1DC_OT_TerrainAlignXYMinCorner,
 )
 
 from .citygml_ops import (
@@ -129,7 +131,7 @@ __all__ = [
     "M1DC_OT_Validate",
     "M1DC_OT_RunAll",
     "M1DC_OT_RunPipeline",
-    # Terrain operators (7)
+    # Terrain operators (9)
     "M1DC_OT_ImportBasemapTerrain",
     "M1DC_OT_ImportRGBBasemap",
     "M1DC_OT_ImportDGMTerrain",
@@ -137,6 +139,8 @@ __all__ = [
     "M1DC_OT_TerrainAlignmentCheck",
     "M1DC_OT_TerrainZAlignLowMedian",
     "M1DC_OT_TerrainAlignToCity",
+    "M1DC_OT_TerrainBakeScale",
+    "M1DC_OT_TerrainAlignXYMinCorner",
     # CityGML operators (2)
     "M1DC_OT_RelocalizeCityGML",
     "M1DC_OT_ColorCityGMLTiles",

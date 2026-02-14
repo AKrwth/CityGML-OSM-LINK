@@ -144,6 +144,13 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
 
 
 def process_tile(gml_path: Path, conn: sqlite3.Connection) -> int:
+  # Canonical key normalization (single source of truth)
+  try:
+      from .key_normalization import normalize_source_tile
+      tile_key = normalize_source_tile(gml_path.name)
+  except ImportError:
+      tile_key = gml_path.stem
+
   cur = conn.cursor()
   inserted = 0
   for bidx, gml_id, bbox in iter_building_bboxes(gml_path):
@@ -155,7 +162,7 @@ def process_tile(gml_path: Path, conn: sqlite3.Connection) -> int:
       INSERT INTO gml_building_centroids(source_tile, building_idx, gml_id, cx, cy, minx, miny, maxx, maxy)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
       """,
-      (gml_path.stem, bidx, gml_id, cx, cy, minx, miny, maxx, maxy),
+      (tile_key, bidx, gml_id, cx, cy, minx, miny, maxx, maxy),
     )
     inserted += 1
     if inserted and (inserted % LOG_EVERY_N_BUILDINGS == 0):

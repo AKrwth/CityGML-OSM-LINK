@@ -460,6 +460,13 @@ class M1DC_PT_Pipeline(Panel):
                 adv_steps.operator("m1dc.import_dgm_terrain", text="Import DGM Terrain", icon="MESH_PLANE")
                 adv_steps.operator("m1dc.align_citygml_z", text="Align CityGML Z to Terrain", icon="ARROW_LEFTRIGHT")
 
+                # Terrain alignment (surgical, deterministic)
+                adv_steps.separator()
+                adv_steps.label(text="Terrain Alignment", icon="ORIENTATION_GLOBAL")
+                align_row = adv_steps.row(align=True)
+                align_row.operator("m1dc.terrain_bake_scale", text="Bake Scale (1,1,1)", icon="OBJECT_ORIGIN")
+                align_row.operator("m1dc.terrain_align_xy_min_corner", text="Align XY (Min-Corner)", icon="SNAP_ON")
+
                 adv_steps.separator()
                 row_mat = adv_steps.row(align=True)
                 mat_op = row_mat.operator("m1dc.materialize_links", text="Materialize Links", icon="MODIFIER")
