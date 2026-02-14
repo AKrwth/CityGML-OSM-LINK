@@ -278,6 +278,17 @@ class M1DC_OT_RunPipeline(Operator):
             # OBJ artifact import logic
             log_info("[Pipeline] Terrain import via OBJ artifact (dedicated folder)")
             log_info(f"[Terrain] Mode: OBJ Artifact | Path: {obj_artifact_dir}")
+            # T1: Check for basemap.json BEFORE import — warn if missing
+            try:
+                from ..terrain.m1_basemap import has_basemap_json
+                if not has_basemap_json(obj_artifact_dir):
+                    log_warn(
+                        f"[Terrain] ⚠ WARNING: No basemap.json found in {obj_artifact_dir}. "
+                        f"OBJ terrain will be UNPLACED (no georeferencing). "
+                        f"Terrain may appear at wrong scale/position near (0,0,0)."
+                    )
+            except Exception:
+                pass
             try:
                 from ..terrain.m1_basemap import import_basemap_obj_artifact
                 imported_objs = import_basemap_obj_artifact(obj_artifact_dir)
@@ -343,6 +354,63 @@ class M1DC_OT_RunPipeline(Operator):
         ok1, msg1 = _run_citygml_import(s)
         msg1 = f"Step2 CityGML: {msg1}"
         _update_world_origin_status(s)
+
+        # ── Phase 2.1: GUARANTEE WORLD_ORIGIN after CityGML import ──
+        # If origin was NOT set by Phase 0 (tile filename inference) or terrain basemap.json,
+        # compute it from the actual imported CityGML geometry bounding box.
+        # This eliminates the silent failure path where Linking never gets its projection base.
+        if ok1 and not s.world_origin_set:
+            log_info("[Pipeline] PHASE 2.1: WORLD_ORIGIN still not set — computing from CityGML geometry bbox")
+            try:
+                import mathutils
+                citygml_col = bpy.data.collections.get("CITYGML_TILES")
+                if citygml_col:
+                    mesh_objs = [o for o in citygml_col.objects if o.type == "MESH"]
+                    if mesh_objs:
+                        all_world_coords = []
+                        for obj in mesh_objs:
+                            bbox = [obj.matrix_world @ mathutils.Vector(c) for c in obj.bound_box]
+                            all_world_coords.extend(bbox)
+                        if all_world_coords:
+                            local_min_x = min(v.x for v in all_world_coords)
+                            local_min_y = min(v.y for v in all_world_coords)
+                            local_max_x = max(v.x for v in all_world_coords)
+                            local_max_y = max(v.y for v in all_world_coords)
+                            # These are local coords (already shifted), so reconstruct world coords
+                            # using scene keys if available, else use local as-is (fallback)
+                            from ...utils.common import ensure_world_origin as _ensure_wo
+                            scene = bpy.context.scene
+                            existing_min_e = scene.get("M1DC_WORLD_MIN_E")
+                            existing_min_n = scene.get("M1DC_WORLD_MIN_N")
+                            if existing_min_e is not None and existing_min_n is not None:
+                                # Scene has partial origin data — use it
+                                _ensure_wo(
+                                    min_e=float(existing_min_e), min_n=float(existing_min_n),
+                                    max_e=float(existing_min_e) + local_max_x,
+                                    max_n=float(existing_min_n) + local_max_y,
+                                    source="CityGML_GeometryBBox", crs="EPSG:25832"
+                                )
+                            else:
+                                # Last resort: CityGML geometry might be in world CRS if import was raw
+                                _ensure_wo(
+                                    min_e=local_min_x, min_n=local_min_y,
+                                    max_e=local_max_x, max_n=local_max_y,
+                                    source="CityGML_GeometryBBox_Raw", crs="EPSG:25832"
+                                )
+                            _update_world_origin_status(s)
+                            min_e, min_n, max_e, max_n = get_world_origin_minmax()
+                            log_info(
+                                f"[Phase2.1] ✓ WORLD_ORIGIN set from CityGML geometry: "
+                                f"min_e={min_e:.0f}, min_n={min_n:.0f}, max_e={max_e:.0f}, max_n={max_n:.0f}"
+                            )
+                        else:
+                            log_warn("[Phase2.1] No CityGML geometry bbox coords — WORLD_ORIGIN remains unset")
+                    else:
+                        log_warn("[Phase2.1] No CityGML meshes in CITYGML_TILES collection")
+                else:
+                    log_warn("[Phase2.1] CITYGML_TILES collection not found")
+            except Exception as ex:
+                log_warn(f"[Phase2.1] Failed to infer WORLD_ORIGIN from geometry: {ex}")
 
         # ── Stage Report: CityGML Import ──
         try:
@@ -451,10 +519,15 @@ class M1DC_OT_RunPipeline(Operator):
         log_info(f"[GPKG] validate path={repr(gpkg_path_clean)} exists={os.path.isfile(gpkg_path_clean)}")
 
         if gpkg_path_clean and os.path.isfile(gpkg_path_clean):
+            log_info("[Pipeline] Checking WORLD_ORIGIN → " + ("OK" if s.world_origin_set else "NOT SET"))
+            log_info("[Pipeline] Checking GPKG → " + ("Found" if os.path.isfile(gpkg_path_clean) else "MISSING"))
             try:
                 ok2, linked, confidences, no_match_reasons, tiles_count, samples = _link_gpkg_to_citygml(s)
             except Exception as ex:
-                step3_link_msg = f"Step3 Linking: failed ({ex})"
+                import traceback
+                log_error(f"[Pipeline] Linking Exception: {type(ex).__name__} – {str(ex)}")
+                log_error(f"[Pipeline] Linking Traceback:\n{traceback.format_exc()}")
+                step3_link_msg = f"Step3 Linking: failed ({type(ex).__name__}: {ex})"
             
             if ok2:
                 total_bld = s.status_citygml_buildings or 0
@@ -476,34 +549,50 @@ class M1DC_OT_RunPipeline(Operator):
 
         # Pipeline gating: skip materialize if linking failed
         links_db_valid = bool(s.links_db_path and os.path.isfile(s.links_db_path))
+
+        # ── Build legends INDEPENDENTLY of linking ──
+        # Legends are derived from GPKG alone (categorical column scan).
+        # They help validate GPKG content even when Linking hasn't succeeded.
+        gpkg_path = (s.gpkg_path.strip() if s.gpkg_path else "")
+        output_dir = s.output_dir or str(get_output_dir())
+        legends_built = False
+        if gpkg_path and os.path.isfile(gpkg_path) and output_dir:
+            log_info("[Pipeline] Building legends (independent of linking)...")
+            try:
+                from ...pipeline.diagnostics.legend_encoding import build_all_legends
+                legend_result = build_all_legends(gpkg_path, output_dir, max_distinct=500)
+                if legend_result.get("success"):
+                    coded_cols = [c["column_name"] for c in legend_result.get("columns", [])]
+                    log_info(f"[LEGEND] {len(coded_cols)} categorical columns encoded = {coded_cols}")
+                    for col_info in legend_result.get("columns", []):
+                        log_info(f"[LEGEND]   {col_info['column_name']}: {col_info.get('distinct_count', '?')} distinct values")
+                    legends_built = True
+                else:
+                    log_warn(f"[Pipeline] Legend build returned error: {legend_result.get('error', '?')}")
+            except Exception as leg_ex:
+                log_warn(f"[Pipeline] Legend build failed (non-fatal): {leg_ex}")
+        else:
+            log_warn("[Pipeline] Legend build skipped (no GPKG or output_dir)")
+
         if links_db_valid and ok2 and s.step2_linked_objects > 0:
             try:
-                # Build legends FIRST (required for Phase 5 code writeback)
-                log_info("[Pipeline] Building legends before materialization...")
-                gpkg_path = (s.gpkg_path.strip() if s.gpkg_path else "")
-                output_dir = s.output_dir or str(get_output_dir())
-                if gpkg_path and os.path.isfile(gpkg_path) and output_dir:
-                    try:
-                        from ...pipeline.diagnostics.legend_encoding import build_all_legends
-                        legend_result = build_all_legends(gpkg_path, output_dir, max_distinct=500)
-                        if legend_result.get("success"):
-                            coded_cols = [c["column_name"] for c in legend_result.get("columns", [])]
-                            log_info(f"[Pipeline] Legends built: {len(coded_cols)} columns = {coded_cols}")
-                        else:
-                            log_warn(f"[Pipeline] Legend build returned error: {legend_result.get('error', '?')}")
-                    except Exception as leg_ex:
-                        log_warn(f"[Pipeline] Legend build failed (non-fatal): {leg_ex}")
-                else:
-                    log_warn("[Pipeline] Legend build skipped (no GPKG or output_dir)")
-
                 log_info("[Pipeline] Materializing face attributes...")
+                log_info(f"[MATERIALIZE] Checking Link DB → Found ({s.links_db_path})")
+                log_info(f"[MATERIALIZE] Linked buildings: {s.step2_linked_objects}")
                 _materialize_face_attributes(context, s, include_features=True)
                 s.step3_basemap_done = True
             except Exception as ex:
                 log_warn(f"[Pipeline] Materialize failed: {ex}")
                 s.step3_basemap_done = False
         else:
-            log_warn("[Pipeline] Materialize skipped (linking failed or no linked buildings)")
+            reasons = []
+            if not links_db_valid:
+                reasons.append("no valid link DB")
+            if not ok2:
+                reasons.append("linking failed")
+            if s.step2_linked_objects <= 0:
+                reasons.append("0 linked buildings")
+            log_warn(f"[Pipeline] Materialize skipped ({', '.join(reasons)})")
 
         # ── Stage Report: Linking ──
         try:

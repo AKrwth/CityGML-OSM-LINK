@@ -43,26 +43,44 @@ def _get_world_origin_min_en(world_origin_obj=None, log_fn=log_info) -> tuple[fl
         or bpy.data.objects.get("WORLD_ORIGIN")
         or bpy.data.objects.get("KOELN_ORIGIN")
     )
-    if origin is None:
-        raise RuntimeError("WORLD_ORIGIN object not found; cannot project OSM centroids to local coords")
 
     keys_e = ["world_min_easting", "world_min_e", "min_e", "easting_min"]
     keys_n = ["world_min_northing", "world_min_n", "min_n", "northing_min"]
 
     min_e = None
     min_n = None
-    for k in keys_e:
-        if k in origin.keys():
-            min_e = origin.get(k)
-            break
-    for k in keys_n:
-        if k in origin.keys():
-            min_n = origin.get(k)
-            break
+
+    # Primary: read from origin Empty object
+    if origin is not None:
+        for k in keys_e:
+            if k in origin.keys():
+                min_e = origin.get(k)
+                break
+        for k in keys_n:
+            if k in origin.keys():
+                min_n = origin.get(k)
+                break
+
+    # Fallback: read from Scene custom properties (set by ensure_world_origin)
+    if min_e is None or min_n is None:
+        scene = getattr(bpy.context, "scene", None)
+        if scene is not None:
+            scene_min_e = scene.get("M1DC_WORLD_MIN_E")
+            scene_min_n = scene.get("M1DC_WORLD_MIN_N")
+            if scene_min_e is not None and scene_min_n is not None:
+                min_e = scene_min_e if min_e is None else min_e
+                min_n = scene_min_n if min_n is None else min_n
+                log_fn(f"[LinkDB] WORLD_ORIGIN: used scene key fallback (M1DC_WORLD_MIN_E/N)")
 
     if min_e is None or min_n is None:
+        available_keys = list(origin.keys()) if origin is not None else []
         raise RuntimeError(
-            f"WORLD_ORIGIN min_e/min_n not found on origin object (keys_e={keys_e}, keys_n={keys_n})"
+            f"WORLD_ORIGIN min_e/min_n not found. "
+            f"Origin object: {'found' if origin else 'MISSING'}, "
+            f"available keys on Empty: {available_keys}, "
+            f"scene M1DC_WORLD_MIN_E/N: "
+            f"{getattr(bpy.context, 'scene', {}).get('M1DC_WORLD_MIN_E', 'MISSING')}/"
+            f"{getattr(bpy.context, 'scene', {}).get('M1DC_WORLD_MIN_N', 'MISSING')}"
         )
 
     try:

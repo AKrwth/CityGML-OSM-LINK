@@ -443,6 +443,50 @@ class M1DC_OT_MaterializeLinks(Operator):
             except Exception:
                 pass
 
+            # ── ACCEPTANCE LOGGING: Transparent summary for verification ──
+            total_faces_all = sum(len(o.data.polygons) for o in mesh_objs if o.data)
+            total_unlinked = total_faces_all - total_linked_faces
+            log_info("=" * 60)
+            log_info("[ACCEPTANCE] === MATERIALIZE SUMMARY ===")
+            log_info(f"[MATERIALIZE] {total_linked_faces}/{total_faces_all} faces linked")
+            log_info(f"[MATERIALIZE] {total_unlinked} faces unlinked")
+            log_info(f"[MATERIALIZE] {len(meshes_written)} meshes written: {meshes_written[:5]}{'...' if len(meshes_written) > 5 else ''}")
+            if p4_total > 0:
+                log_info(f"[MATERIALIZE] {p4_total} OSM feature values written (Phase 4)")
+            else:
+                log_info(f"[MATERIALIZE] 0 OSM features written (Phase 4) — check GPKG feature tables")
+            log_info(f"[MATERIALIZE] {p5_total} legend codes written (Phase 5)")
+
+            # Per-mesh hit/miss breakdown
+            for mesh_obj in mesh_objs[:5]:
+                m = mesh_obj.data
+                fc = len(m.polygons)
+                has_link_attr = m.attributes.get("has_link")
+                if has_link_attr:
+                    linked_count = sum(1 for i in range(min(len(has_link_attr.data), fc)) if has_link_attr.data[i].value != 0)
+                    log_info(f"[MATERIALIZE]   {mesh_obj.name}: {linked_count}/{fc} linked")
+
+            # Link distance statistics
+            dist_values = []
+            for mesh_obj in mesh_objs:
+                m = mesh_obj.data
+                dist_a = m.attributes.get("link_dist_m")
+                if dist_a:
+                    for i in range(min(len(dist_a.data), len(m.polygons))):
+                        v = dist_a.data[i].value
+                        if v > 0:
+                            dist_values.append(v)
+            if dist_values:
+                avg_dist = sum(dist_values) / len(dist_values)
+                max_dist = max(dist_values)
+                min_dist = min(dist_values)
+                log_info(f"[LINKING] avg distance {avg_dist:.1f}m, min {min_dist:.1f}m, max {max_dist:.1f}m ({len(dist_values)} links)")
+
+            # Legend code count per column
+            if p5_nonzero_per_mesh:
+                log_info(f"[LEGEND] codes per mesh: {dict(list(p5_nonzero_per_mesh.items())[:5])}")
+            log_info("=" * 60)
+
             # Final summary
             summary = (
                 f"P3: {total_linked_faces} linked faces across {len(meshes_written)} meshes | "

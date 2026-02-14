@@ -850,6 +850,100 @@ def _read_face_attr_auto(obj, attr_name, face_index, default=None):
     return getattr(a.data[face_index], "value", default)
 
 
+def _inspect_active_face_impl(s, mesh, poly_idx):
+    """Inspect face attributes at poly_idx and populate inspector data.
+
+    Shows RAW face attributes even when legend decoding hasn't been run.
+    This makes Inspector independent of legend build status.
+    """
+    if mesh is None or poly_idx is None:
+        return None
+
+    face_count = len(mesh.polygons)
+    if poly_idx >= face_count:
+        return None
+
+    # Clear previous inspector data
+    try:
+        s.inspector_decoded_attrs.clear()
+    except Exception:
+        pass
+
+    result = {"summary": "", "attrs": {}}
+
+    # Core link attributes (always check these)
+    core_attrs = [
+        "osm_way_id", "osm_id_int", "link_conf", "link_dist_m", "link_iou",
+        "has_link", "gml_building_idx", "building_idx", "source_tile_id",
+    ]
+    # OSM feature string attributes
+    osm_string_attrs = [
+        "building", "amenity", "landuse", "name", "shop", "office",
+        "tourism", "leisure", "historic", "man_made", "highway",
+        "public_transport", "railway", "natural", "waterway", "aeroway",
+    ]
+    # Legend code attributes
+    legend_code_attrs = [f"osm_{k}_code" for k in [
+        "building", "amenity", "landuse", "shop", "office", "tourism",
+        "leisure", "historic", "man_made", "highway",
+    ]]
+
+    all_candidate_attrs = core_attrs + osm_string_attrs + legend_code_attrs
+    found_attrs = {}
+
+    for attr_name in all_candidate_attrs:
+        a = mesh.attributes.get(attr_name)
+        if a and a.domain == "FACE" and poly_idx < len(a.data):
+            val = a.data[poly_idx].value
+            # Skip default/empty values for clean display
+            if val not in (0, 0.0, "", b""):
+                found_attrs[attr_name] = val
+
+    # Also scan ALL face attrs (catch any custom ones)
+    for a in mesh.attributes:
+        if a.domain == "FACE" and a.name not in found_attrs:
+            if poly_idx < len(a.data):
+                val = a.data[poly_idx].value
+                if val not in (0, 0.0, "", b""):
+                    found_attrs[a.name] = val
+
+    # Populate inspector properties
+    osm_id = found_attrs.get("osm_id_int", found_attrs.get("osm_way_id", 0))
+    bidx = found_attrs.get("gml_building_idx", found_attrs.get("building_idx", 0))
+    conf = found_attrs.get("link_conf", 0.0)
+
+    try:
+        s.inspector_osm_id = str(osm_id) if osm_id else ""
+        s.inspector_building_idx = str(bidx) if bidx else ""
+        s.inspector_link_conf = f"{conf:.3f}" if isinstance(conf, float) else str(conf)
+    except Exception:
+        pass
+
+    # Populate decoded attrs (works with raw data even without legend)
+    for attr_name, val in sorted(found_attrs.items()):
+        try:
+            item = s.inspector_decoded_attrs.add()
+            item.name = attr_name
+            item.value = str(val)
+        except Exception:
+            pass
+
+    has_link = bool(found_attrs.get("has_link", 0))
+    has_legend = any(k.endswith("_code") for k in found_attrs)
+    mode_desc = "linked" if has_link else "unlinked"
+    if has_legend:
+        mode_desc += "+legend"
+    else:
+        mode_desc += " (raw, no legend codes)"
+
+    summary = f"face[{poly_idx}] {mode_desc} | {len(found_attrs)} attrs"
+    result["summary"] = summary
+    result["attrs"] = found_attrs
+
+    log_info(f"[Inspector] {summary}")
+    return result
+
+
 def _read_face_int_attr(mesh, attr_name, poly_index, default=None):
     if mesh is None or attr_name is None or poly_index is None:
         return default
@@ -4003,12 +4097,26 @@ def _link_gpkg_to_citygml(s):
         from .pipeline.linking.mesh_discovery import collect_citygml_meshes
         from .utils.logging_system import log_info, log_warn, log_error
 
+        # ── UX: Progress on every gating step ──
+        log_info("[Link] ── STEP 3: GPKG LINKING ──")
+
         gpkg_path = getattr(s, "gpkg_path", "").strip()
-        # FIX: was reading non-existent 'citygml_folder'; correct property is 'citygml_dir'
         citygml_dir = getattr(s, "citygml_dir", "").strip()
         output_dir = getattr(s, "output_dir", "").strip()
 
-        # ── Proof logging ──
+        # Gate checks with visible progress
+        log_info(f"[Link] Checking GPKG path → {'Found' if gpkg_path and os.path.isfile(gpkg_path) else 'MISSING'}")
+        log_info(f"[Link] Checking CityGML dir → {'Found' if citygml_dir and os.path.isdir(citygml_dir) else ('N/A' if not citygml_dir else 'MISSING')}")
+        log_info(f"[Link] Checking output dir → {'OK' if output_dir else 'MISSING (will use default)'}")
+
+        # Check WORLD_ORIGIN status
+        from .utils.common import get_world_origin_minmax
+        min_e, min_n, max_e, max_n = get_world_origin_minmax()
+        wo_ok = min_e is not None and min_n is not None
+        log_info(f"[Link] Checking WORLD_ORIGIN → {'OK (min_e=' + f'{min_e:.0f}, min_n={min_n:.0f})' if wo_ok else 'NOT SET ⚠'}")
+        if not wo_ok:
+            log_warn("[Link] ⚠ WORLD_ORIGIN not set — linking may fail during coordinate projection")
+
         log_info(f"[Link] Precondition check:")
         log_info(f"[Link]   gpkg_path       = {gpkg_path!r}")
         log_info(f"[Link]   citygml_dir     = {citygml_dir!r}")
@@ -4043,13 +4151,14 @@ def _link_gpkg_to_citygml(s):
                 return False, 0, [], [], 0, []
 
         # Run linking pipeline
+        log_info(f"[Link] Running centroid matching pipeline...")
         log_info(f"[Link] Linking GPKG → CityGML\n  GPKG: {gpkg_path}\n  GML dir: {citygml_dir}")
         osm_db, gml_db, link_db = ensure_link_dbs(gpkg_path, citygml_dir or "", output_dir)
 
         # Store link DB path in settings (ensure_link_dbs also sets it, but be explicit)
         link_db_str = str(link_db.resolve())
         s.links_db_path = link_db_str
-        log_info(f"[Link][Artifacts] links_db_path set to: {link_db_str}")
+        log_info(f"[Link] Checking Link DB → {'Found' if link_db.exists() else 'MISSING'} ({link_db_str})")
         log_info(f"[Link][Artifacts] file exists: {link_db.exists()} size={link_db.stat().st_size if link_db.exists() else 0}")
 
         # Count linked buildings from link database
@@ -4081,11 +4190,36 @@ def _link_gpkg_to_citygml(s):
                 except Exception:
                     tiles_count = 0
 
+                # ── ACCEPTANCE LOGGING: Distance & IoU stats ──
+                dist_stats_msg = ""
+                iou_stats_msg = ""
+                try:
+                    cols = {r[1] for r in cur.execute("PRAGMA table_info('gml_osm_links');").fetchall()}
+                    if "dist_m" in cols:
+                        cur.execute("SELECT AVG(dist_m), MIN(dist_m), MAX(dist_m) FROM gml_osm_links WHERE dist_m IS NOT NULL AND dist_m > 0")
+                        drow = cur.fetchone()
+                        if drow and drow[0] is not None:
+                            dist_stats_msg = f"[LINKING] avg distance {drow[0]:.1f}m, min {drow[1]:.1f}m, max {drow[2]:.1f}m"
+                    if "iou" in cols:
+                        cur.execute("SELECT AVG(iou), MIN(iou), MAX(iou) FROM gml_osm_links WHERE iou IS NOT NULL AND iou > 0")
+                        irow = cur.fetchone()
+                        if irow and irow[0] is not None:
+                            iou_stats_msg = f"[LINKING] avg IoU {irow[0]:.3f}, min {irow[1]:.3f}, max {irow[2]:.3f}"
+                except Exception:
+                    pass
+
                 conn.close()
-                log_info(
-                    f"[Link] Linked {linked_count} buildings across {tiles_count} tiles "
-                    f"(avg confidence: {avg_conf:.3f})"
-                )
+
+                # ── UX: Rich linking summary ──
+                log_info("=" * 50)
+                log_info(f"[LINKING] {linked_count} buildings linked across {tiles_count} tiles")
+                log_info(f"[LINKING] avg confidence: {avg_conf:.3f}")
+                if dist_stats_msg:
+                    log_info(dist_stats_msg)
+                if iou_stats_msg:
+                    log_info(iou_stats_msg)
+                log_info(f"[Link] Writing Face Attributes → {linked_count} linked")
+                log_info("=" * 50)
             except Exception as ex:
                 log_warn(f"[Link] Could not query link statistics: {ex}")
         else:
