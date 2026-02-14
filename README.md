@@ -32,6 +32,30 @@ Blender is used here as an experimental integration environment, not as a GIS re
 
 Within this project, Blender functions as a semantic laboratory for geometric-semantic reconciliation.
 
+## Academic Context & Research Disclaimer
+
+This repository originates from an M1 research project conducted at RWTH Aachen University within the Design Computation teaching framework under the supervision of Prof. Dr. Jakob Beetz.
+
+The project investigates open and reproducible methods for the spatial-semantic integration of heterogeneous urban geodata (CityGML, OpenStreetMap, terrain models) inside Blender as an experimental integration environment.
+
+All datasets used during development stem from publicly accessible sources and are processed exclusively for academic research purposes.
+
+This repository:
+
+- is a research prototype
+- is not intended as a production GIS system
+- does not claim completeness of semantic standards
+- prioritizes reproducibility and architectural clarity over performance optimization
+- may contain experimental or exploratory components
+
+The goal is methodological transparency, not commercial deployment.
+
+### Research Software Notice
+
+This codebase is developed in the context of research exploration.
+It intentionally documents architectural decisions, validation gates, and failure modes in detail.
+Design choices reflect academic investigation rather than product engineering constraints.
+
 ## Quick Start
 
 1. Install Python runtime dependencies from [requirements.txt](requirements.txt) into Blender's Python environment.
