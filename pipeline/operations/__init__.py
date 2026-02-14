@@ -48,6 +48,10 @@ from .terrain_ops import (
     M1DC_OT_TerrainAlignXYMinCorner,
 )
 
+from .op_terrain_fit import (
+    M1DC_OT_TerrainFitBBox,
+)
+
 from .citygml_ops import (
     M1DC_OT_RelocalizeCityGML,
     M1DC_OT_ColorCityGMLTiles,
@@ -141,6 +145,7 @@ __all__ = [
     "M1DC_OT_TerrainAlignToCity",
     "M1DC_OT_TerrainBakeScale",
     "M1DC_OT_TerrainAlignXYMinCorner",
+    "M1DC_OT_TerrainFitBBox",
     # CityGML operators (2)
     "M1DC_OT_RelocalizeCityGML",
     "M1DC_OT_ColorCityGMLTiles",

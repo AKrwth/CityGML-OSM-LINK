@@ -224,6 +224,20 @@ class M1DC_OT_MaterializeLinks(Operator):
                     log_warn(f"[Materialize] P3: Cannot create osm_way_id for {mesh_obj.name}")
                     continue
 
+                # CRITICAL: Re-resolve idx_attr AFTER creating output attributes.
+                # Adding attributes to a mesh invalidates existing bpy_prop_collection
+                # references (Blender API caveat). Without this, idx_attr.data becomes
+                # a stale empty collection, causing IndexError.
+                idx_attr = None
+                for candidate in ("gml_building_idx", "gml__building_idx", "building_idx"):
+                    a = mesh.attributes.get(candidate)
+                    if a and a.domain == 'FACE' and a.data_type == 'INT' and len(a.data) == face_count:
+                        idx_attr = a
+                        break
+                if idx_attr is None:
+                    log_warn(f"[Materialize] P3: {mesh_obj.name} building_idx invalidated after attr creation, skipping")
+                    continue
+
                 # [PROOF] Pre-loop: count how many link_map entries match this tile
                 _tile_entry_count = sum(1 for k in link_map if k[0] == source_tile)
                 _first_bidx = int(idx_attr.data[0].value) if face_count > 0 else -1
@@ -345,11 +359,28 @@ class M1DC_OT_MaterializeLinks(Operator):
 
             # Phase 4: Materialize OSM features (building, amenity, name, etc.)
             p4_total = 0
+            p4_hits_total = 0
+            p4_miss_total = 0
             if self.include_features and s.gpkg_path:
                 _log_info(f"[Materialize] P4: Materializing OSM features from {s.gpkg_path}")
                 if total_linked_faces == 0:
                     _log_info("[Materialize] P4: 0 linked faces from P3 — skipping Phase 4/5")
                 else:
+                    # ── KEY PROOF: Compare 3 sample keys from link_map vs 3 from scene ──
+                    _sample_db_keys = list(link_map.keys())[:3]
+                    _log_info(f"[PH4][KEYS][DB] sample keys from link_map: {_sample_db_keys}")
+                    for _mk in _sample_db_keys:
+                        _mv = link_map[_mk]
+                        _log_info(f"[PH4][KEYS][DB]   (tile={_mk[0]!r}, idx={_mk[1]}) -> osm_id={_mv.get('osm_id','?')}")
+
+                    _sample_scene_keys = []
+                    for _mo in mesh_objs[:3]:
+                        _ms_tile = normalize_source_tile(_mo.get("source_tile", _mo.name))
+                        _ms_idx_attr = _mo.data.attributes.get("gml_building_idx") or _mo.data.attributes.get("building_idx")
+                        _ms_first_idx = int(_ms_idx_attr.data[0].value) if _ms_idx_attr and len(_ms_idx_attr.data) > 0 else -1
+                        _sample_scene_keys.append((_ms_tile, _ms_first_idx))
+                    _log_info(f"[PH4][KEYS][SCENE] sample keys from meshes: {_sample_scene_keys}")
+
                     for mesh_obj in mesh_objs:
                         try:
                             from ... import ops as ops_module
@@ -367,7 +398,29 @@ class M1DC_OT_MaterializeLinks(Operator):
                                 mesh_obj.update_tag()
                         except Exception as ex:
                             log_warn(f"[Materialize] Phase 4 for {mesh_obj.name}: {ex}")
+                            import traceback
+                            traceback.print_exc()
                             continue
+
+                    # ── P4 ACCEPTANCE: Verify face attributes are domain=FACE with real values ──
+                    _p4_proof_cols = ["building", "amenity", "name", "has_feature"]
+                    for _mo in mesh_objs[:2]:
+                        _m = _mo.data
+                        _fc = len(_m.polygons)
+                        _proof_parts = []
+                        for _pcol in _p4_proof_cols:
+                            _pa = _m.attributes.get(_pcol)
+                            if _pa:
+                                _nz = 0
+                                for _pi in range(min(len(_pa.data), _fc)):
+                                    _v = _pa.data[_pi].value
+                                    if _v and str(_v).strip() and _v not in (0, 0.0):
+                                        _nz += 1
+                                _proof_parts.append(f"{_pcol}:{_pa.data_type}/{_pa.domain} nz={_nz}")
+                            else:
+                                _proof_parts.append(f"{_pcol}:MISSING")
+                        _log_info(f"[PH4][ATTR_PROOF] {_mo.name} fc={_fc} | {' | '.join(_proof_parts)}")
+
                 _log_info(f"[PROOF][P4_READBACK] total_features_written={p4_total} meshes={len(mesh_objs)}")
             else:
                 _log_info("[Materialize] P4: Skipped (include_features=False or no gpkg_path)")

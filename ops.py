@@ -2411,6 +2411,22 @@ def _materialize_osm_features(mesh, osm_id_attr, gpkg_path):
             attr = None
         attr_handles[feature_col] = attr
 
+    # ── CRITICAL: Re-resolve ALL attribute handles after bulk creation ──
+    # Adding attributes to a mesh invalidates existing bpy_prop_collection
+    # references (Blender 4.x API caveat). Re-fetch every handle to get fresh
+    # pointers that correctly reflect the final attribute layout.
+    has_feature_attr = mesh.attributes.get("has_feature")
+    if has_feature_attr and (has_feature_attr.domain != "FACE" or has_feature_attr.data_type != "INT" or len(has_feature_attr.data) != face_count):
+        has_feature_attr = None
+    for feature_col, attr_name in attr_mapping.items():
+        attr = mesh.attributes.get(attr_name)
+        if attr and attr.domain == "FACE" and attr.data_type == "STRING" and len(attr.data) == face_count:
+            attr_handles[feature_col] = attr
+        else:
+            attr_handles[feature_col] = None
+    _valid_handles = sum(1 for v in attr_handles.values() if v is not None)
+    print(f"[P4][ATTR_REFRESH] Re-resolved {_valid_handles}/{len(attr_handles)} attr handles + has_feature={'OK' if has_feature_attr else 'MISSING'}")
+
     # Step 6: Write features to FACE attributes
     print("[OSM Features] Writing features to FACE attributes...")
 

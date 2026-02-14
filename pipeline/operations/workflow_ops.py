@@ -427,6 +427,61 @@ class M1DC_OT_RunPipeline(Operator):
         except Exception:
             pass
 
+        # ── Phase 2.2: TERRAIN BBOX-FIT ──
+        # Scale + position terrain to exactly match CityGML tile union bounding box.
+        # Uses fit_terrain_to_citygml (pipeline/terrain/terrain_fit.py) which computes
+        # target bbox directly from CityGML objects (not from scene WORLD_BOUNDS).
+        # Tripwire: error > 5cm → hard fail.
+        if ok3 and ok1:
+            log_info("[Pipeline] PHASE 2.2: TERRAIN BBOX-FIT to CityGML extent")
+            try:
+                from ..terrain.terrain_fit import fit_terrain_to_citygml
+                from ..terrain.terrain_validation import get_terrain_object, collect_gml_objects
+
+                dem_obj = get_terrain_object()
+                gml_objs = collect_gml_objects()
+
+                if dem_obj and gml_objs:
+                    # Check if already fitted (avoid double-scaling)
+                    if dem_obj.get("M1DC_TERRAIN_FIT"):
+                        log_info("[Pipeline] Phase 2.2: Terrain already fitted — skipping")
+                    else:
+                        # Find RGB object if it exists
+                        rgb_obj = None
+                        terrain_col = bpy.data.collections.get("TERRAIN")
+                        if terrain_col:
+                            for obj in terrain_col.objects:
+                                if obj.type == "MESH" and obj != dem_obj and "rgb" in obj.name.lower():
+                                    rgb_obj = obj
+                                    break
+
+                        fit_info = fit_terrain_to_citygml(
+                            terrain_obj=dem_obj,
+                            citygml_objs=gml_objs,
+                            eps=0.05,
+                            rgb_obj=rgb_obj,
+                        )
+                        log_info(
+                            f"[Pipeline] Phase 2.2: {fit_info.get('status')} | "
+                            f"target={fit_info.get('target_size')} | "
+                            f"before={fit_info.get('terrain_size_before')} | "
+                            f"after={fit_info.get('terrain_size_after')} | "
+                            f"err={fit_info.get('error', 0):.4f}m"
+                        )
+                elif not dem_obj:
+                    log_warn("[Pipeline] Phase 2.2: No terrain object found — bbox-fit skipped")
+                else:
+                    log_warn("[Pipeline] Phase 2.2: No CityGML tiles found — bbox-fit skipped")
+            except RuntimeError as fit_ex:
+                # Hard tripwire: terrain fit failed → pipeline should flag but continue
+                # (terrain is optional; linking/materialize proceed regardless)
+                log_error(f"[Pipeline] Phase 2.2: Terrain bbox-fit FAILED (hard tripwire): {fit_ex}")
+                self.report({"WARNING"}, f"Terrain bbox-fit failed: {fit_ex}")
+            except Exception as fit_ex:
+                log_warn(f"[Pipeline] Phase 2.2: Terrain bbox-fit error (non-fatal): {fit_ex}")
+                import traceback
+                traceback.print_exc()
+
         # Step 2.5: VALIDATION & AUTO-CORRECTION (Terrain + CityGML alignment)
         # ARCHITECTURE: Terrain validation gates terrain-dependent steps ONLY.
         # Linking/Materialize/Legends do NOT require terrain and proceed regardless.
