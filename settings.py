@@ -728,7 +728,13 @@ class M1DCSettings(PropertyGroup):
     min_terrain_coverage: FloatProperty(
         name="Minimum Terrain Coverage",
         description="Minimum terrain XY coverage ratio vs CityGML extent (0.6 = 60%). Lower for proof-runs with partial terrain.",
-        default=0.6,
-        min=0.1,
+        default=0.05,
+        min=0.01,
         max=1.0,
+    )
+
+    skip_terrain_validation: BoolProperty(
+        name="Skip Terrain Validation",
+        description="DEBUG: Skip terrain coverage/Z validation gate entirely. Linking + Materialize proceed even without valid terrain. Not for production runs.",
+        default=False,
     )

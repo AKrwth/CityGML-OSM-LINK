@@ -123,6 +123,15 @@ class M1DC_OT_MaterializeLinks(Operator):
 
             log_info(f"[Materialize] Found {len(mesh_objs)} CityGML meshes")
 
+            # ── OBJECT MODE GUARD: foreach_set/attribute writes fail silently in EDIT mode ──
+            active_obj = bpy.context.view_layer.objects.active
+            if active_obj and active_obj.mode != 'OBJECT':
+                log_warn(f"[Materialize] Active object '{active_obj.name}' in {active_obj.mode} mode — switching to OBJECT")
+                try:
+                    bpy.ops.object.mode_set(mode='OBJECT')
+                except Exception as mode_ex:
+                    log_warn(f"[Materialize] mode_set failed: {mode_ex} — proceeding anyway")
+
             # ── Phase 3: Write core link data (osm_way_id, confidence, dist, iou)
             #    to FACE attributes from link DB. Required BEFORE Phase 4/5. ──
             _load_link_lookup = getattr(ops, "_load_link_lookup", None)
@@ -353,6 +362,9 @@ class M1DC_OT_MaterializeLinks(Operator):
                                 )
                                 p4_total += (written_count or 0)
                                 log_info(f"[Materialize] Phase 4: {mesh_obj.name} wrote {written_count} features")
+                                # Ensure depsgraph knows this object changed (Phase 4 only updates mesh data)
+                                mesh_obj.data.update()
+                                mesh_obj.update_tag()
                         except Exception as ex:
                             log_warn(f"[Materialize] Phase 4 for {mesh_obj.name}: {ex}")
                             continue
@@ -409,6 +421,9 @@ class M1DC_OT_MaterializeLinks(Operator):
                                     if codes_written:
                                         p5_nonzero_per_mesh[mesh_obj.name] = codes_written
                                         log_info(f"[Materialize] P5: {mesh_obj.name} wrote {codes_written} codes")
+                                    # Ensure depsgraph knows this object changed (Phase 5 only updates mesh data)
+                                    mesh_obj.data.update()
+                                    mesh_obj.update_tag()
                                 except Exception as ex:
                                     log_warn(f"[Materialize] P5 for {mesh_obj.name}: {ex}")
                                     continue
@@ -420,6 +435,13 @@ class M1DC_OT_MaterializeLinks(Operator):
             except Exception as ex:
                 log_warn(f"[Materialize] P5 setup failed: {ex}")
             _log_info(f"[PROOF][P5_READBACK] total_legend_codes_written={p5_total} meshes={len(mesh_objs)}")
+
+            # ── FINAL DEPSGRAPH FLUSH: Ensure ALL phases are visible in Spreadsheet ──
+            try:
+                bpy.context.view_layer.update()
+                _log_info("[Materialize] Final view_layer.update() done — Spreadsheet should reflect all attributes")
+            except Exception:
+                pass
 
             # Final summary
             summary = (

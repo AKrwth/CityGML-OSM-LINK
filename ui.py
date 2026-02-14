@@ -440,6 +440,21 @@ class M1DC_PT_Pipeline(Panel):
                 out_dir = getattr(s, "output_dir", "").strip()
                 cache_path = get_terrain_cache_dir(out_dir) if out_dir else "(set Output)"
                 adv_box.label(text=f"Cache: {cache_path}", icon="FILE_FOLDER")
+
+            # --- Terrain Validation Overrides ---
+            adv_box.separator()
+            adv_box.label(text="Validation Overrides:", icon="SETTINGS")
+
+            cov_row = adv_box.row(align=True)
+            cov_row.label(text="Min Coverage")
+            cov_row.prop(s, "min_terrain_coverage", text="")
+
+            skip_row = adv_box.row(align=True)
+            skip_row.prop(s, "skip_terrain_validation", text="Skip Terrain Validation")
+            if getattr(s, "skip_terrain_validation", False):
+                warn_box = adv_box.box()
+                warn_box.label(text="⚠ DEBUG: Terrain gate disabled", icon="ERROR")
+                warn_box.label(text="   Terrain steps skipped, linking proceeds")
         
         # ADVANCED: Individual steps (for debugging/iteration) – only in DEV mode
         if getattr(s, "ui_mode", "SIMPLE") == "DEV":

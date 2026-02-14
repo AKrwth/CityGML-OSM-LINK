@@ -44,11 +44,23 @@ except ImportError:
 
 # Materialization stub (calls MaterializeLinks operator)
 def _materialize_face_attributes(context, s, include_features=True):
-    """Stub: materialize face attributes by invoking MaterializeLinks operator."""
+    """Invoke MaterializeLinks operator with proper context."""
     try:
-        from ...utils.logging_system import log_info
+        from ...utils.logging_system import log_info, log_error
         log_info("[Materialize] Invoking MaterializeLinks operator...")
-        bpy.ops.m1dc.materialize_links()
+
+        # Ensure OBJECT mode before invoking operator (attribute writes fail in EDIT mode)
+        active_obj = bpy.context.view_layer.objects.active
+        if active_obj and active_obj.mode != 'OBJECT':
+            log_info(f"[Materialize] Switching '{active_obj.name}' from {active_obj.mode} to OBJECT mode")
+            try:
+                bpy.ops.object.mode_set(mode='OBJECT')
+            except Exception:
+                pass
+
+        result = bpy.ops.m1dc.materialize_links('EXEC_DEFAULT')
+        if result != {'FINISHED'}:
+            log_error(f"[Materialize] Operator returned {result} (expected FINISHED)")
     except Exception as ex:
         from ...utils.logging_system import log_error
         log_error(f"[Materialize] Failed: {ex}")
@@ -81,6 +93,11 @@ try:
     from ...pipeline.terrain import terrain_validation
 except ImportError:
     from pipeline.terrain import terrain_validation
+
+try:
+    from ...pipeline.diagnostics.stage_report import StageReport, write_stage_report, summarize_reports
+except ImportError:
+    from pipeline.diagnostics.stage_report import StageReport, write_stage_report, summarize_reports
 
 
 class M1DC_OT_Validate(Operator):
@@ -123,6 +140,15 @@ class M1DC_OT_RunAll(Operator):
             self.report({"ERROR"}, "Scene settings not registered; reload add-on.")
             return {"CANCELLED"}
 
+        # ── OBJECT MODE GUARD: operators require OBJECT mode context ──
+        active_obj = bpy.context.view_layer.objects.active
+        if active_obj and active_obj.mode != 'OBJECT':
+            log_warn(f"[RunAll] Active object '{active_obj.name}' in {active_obj.mode} mode — switching to OBJECT")
+            try:
+                bpy.ops.object.mode_set(mode='OBJECT')
+            except Exception:
+                pass
+
         # Step 0: Validate
         _do_validation(context, s)
         if not getattr(s, "status_citygml_loaded", False):
@@ -130,13 +156,13 @@ class M1DC_OT_RunAll(Operator):
             return {"CANCELLED"}
 
         # Step 1: Run pipeline (import + link)
-        result_pipeline = bpy.ops.m1dc.run_pipeline('INVOKE_DEFAULT')
+        result_pipeline = bpy.ops.m1dc.run_pipeline('EXEC_DEFAULT')
         if result_pipeline != {'FINISHED'}:
             self.report({"ERROR"}, "Pipeline execution failed")
             return {"CANCELLED"}
 
         # Step 2: Materialize links
-        result_materialize = bpy.ops.m1dc.materialize_links('INVOKE_DEFAULT')
+        result_materialize = bpy.ops.m1dc.materialize_links('EXEC_DEFAULT')
         if result_materialize != {'FINISHED'}:
             self.report({"WARNING"}, "Materialization was not completed (optional step)")
             # Don't abort; materialization is optional
@@ -297,13 +323,53 @@ class M1DC_OT_RunPipeline(Operator):
 
         _update_world_origin_status(s)
 
+        # ── Stage Report: Terrain Import ──
+        _report_dir = s.output_dir or str(get_output_dir())
+        try:
+            _sr_terrain = StageReport(
+                stage="terrain_import", stage_number=1,
+                status="PASS" if ok3 else "SKIPPED",
+                inputs={"obj_artifact_dir": obj_artifact_dir, "terrain_root": terrain_root},
+                metrics={},
+                artifacts_created=[],
+                fatal_reason=None if ok3 else "No terrain imported",
+            )
+            write_stage_report(_sr_terrain, _report_dir)
+            log_info(_sr_terrain.one_liner())
+        except Exception:
+            pass
+
         # Step 2: CityGML (requires locked origin from BaseMap or inferred)
         ok1, msg1 = _run_citygml_import(s)
         msg1 = f"Step2 CityGML: {msg1}"
         _update_world_origin_status(s)
 
+        # ── Stage Report: CityGML Import ──
+        try:
+            _sr_citygml = StageReport(
+                stage="citygml_import", stage_number=2,
+                status="PASS" if ok1 else "FAIL",
+                inputs={"citygml_dir": getattr(s, 'citygml_dir', '')},
+                metrics={"tiles": s.step1_citygml_tiles, "buildings": getattr(s, 'status_citygml_buildings', 0)},
+                artifacts_created=[],
+                fatal_reason=None if ok1 else msg1,
+            )
+            write_stage_report(_sr_citygml, _report_dir)
+            log_info(_sr_citygml.one_liner())
+        except Exception:
+            pass
+
         # Step 2.5: VALIDATION & AUTO-CORRECTION (Terrain + CityGML alignment)
-        if ok3 or ok1:
+        # ARCHITECTURE: Terrain validation gates terrain-dependent steps ONLY.
+        # Linking/Materialize/Legends do NOT require terrain and proceed regardless.
+        terrain_valid = False  # tracks whether terrain-dependent steps should run
+        _skip_tv = getattr(s, "skip_terrain_validation", False)
+        diag = {}  # initialized for stage report; populated by validate_and_decide()
+
+        if _skip_tv:
+            log_warn("[Pipeline] PHASE 2.5: TERRAIN VALIDATION SKIPPED (skip_terrain_validation=True)")
+            terrain_valid = ok3  # terrain steps run only if import succeeded
+        elif ok3 or ok1:
             try:
                 log_info("[Pipeline] PHASE 2.5: VALIDATION & CORRECTION")
                 decision, diag = terrain_validation.validate_and_decide()
@@ -314,26 +380,30 @@ class M1DC_OT_RunPipeline(Operator):
                 scene["M1DC_VALIDATION_DIAG"] = str(diag)
 
                 if decision == "BLOCKED":
-                    log_error(f"[Pipeline] Validation BLOCKED: {diag.get('reason', 'Unknown')}")
-                    self.report({"ERROR"}, f"Pipeline validation failed: {diag.get('reason', 'Unknown')}")
-                    return {"CANCELLED"}
+                    log_error(f"[Pipeline] Terrain validation BLOCKED: {diag.get('reason', 'Unknown')}")
+                    log_warn("[Pipeline] Terrain-dependent steps SKIPPED — Linking/Materialize/Legends continue")
+                    self.report({"WARNING"}, f"Terrain validation BLOCKED — terrain steps skipped: {diag.get('reason', 'Unknown')}")
+                    terrain_valid = False
 
                 elif decision == "FAIL":
-                    log_error(f"[Pipeline] Validation FAIL: {diag.get('reason', 'Unknown')}")
-                    self.report({"ERROR"}, f"Terrain validation FAIL: {diag.get('reason', 'Unknown')}")
-                    return {"CANCELLED"}
+                    log_error(f"[Pipeline] Terrain validation FAIL: {diag.get('reason', 'Unknown')}")
+                    log_warn("[Pipeline] Terrain-dependent steps SKIPPED — Linking/Materialize/Legends continue")
+                    self.report({"WARNING"}, f"Terrain validation FAIL — terrain steps skipped: {diag.get('reason', 'Unknown')}")
+                    terrain_valid = False
 
                 elif decision == "FIX_SCALE_Z":
                     log_info(f"[Pipeline] Validation decision: FIX_SCALE_Z")
                     # Apply terrain scale fix and Z offset
                     # Full implementation in ops.py lines 9200-9350
                     log_info("[Pipeline] ✓ Validation corrections complete")
+                    terrain_valid = True
 
                 elif decision == "CLEAN":
                     log_info("[Pipeline] Validation decision: CLEAN")
+                    terrain_valid = True
 
-                # XY ALIGNMENT CORRECTION (after scale/Z)
-                if decision not in ("BLOCKED", "FAIL"):
+                # XY ALIGNMENT CORRECTION (after scale/Z) — only if terrain is valid
+                if terrain_valid:
                     if decision == "CLEAN":
                         log_info("[Pipeline] ✓ decision=CLEAN: NO XY shift (hard policy)")
                     else:
@@ -343,6 +413,26 @@ class M1DC_OT_RunPipeline(Operator):
             except Exception as ex:
                 log_error(f"[Pipeline] Validation failed: {ex}")
                 self.report({"WARNING"}, f"Validation failed: {ex}")
+                terrain_valid = False
+
+        # ── Stage Report: Terrain Validation ──
+        try:
+            _tv_status = "SKIPPED" if _skip_tv else ("PASS" if terrain_valid else "FAIL")
+            _tv_reason = None
+            if not _skip_tv and not terrain_valid:
+                _tv_reason = diag.get('reason', 'Validation not reached')
+            _sr_terrval = StageReport(
+                stage="terrain_validation", stage_number=3,
+                status=_tv_status,
+                inputs={},
+                metrics=dict(diag) if diag else {},
+                artifacts_created=[],
+                fatal_reason=_tv_reason,
+            )
+            write_stage_report(_sr_terrval, _report_dir)
+            log_info(_sr_terrval.one_liner())
+        except Exception:
+            pass
 
         # Step 3: GPKG link
         ok2 = False
@@ -414,6 +504,44 @@ class M1DC_OT_RunPipeline(Operator):
                 s.step3_basemap_done = False
         else:
             log_warn("[Pipeline] Materialize skipped (linking failed or no linked buildings)")
+
+        # ── Stage Report: Linking ──
+        try:
+            _sr_link = StageReport(
+                stage="linking", stage_number=4,
+                status="PASS" if ok2 else ("SKIPPED" if not gpkg_path_clean else "FAIL"),
+                inputs={"gpkg_path": gpkg_path_clean},
+                metrics={"linked": linked, "tiles": tiles_count, "confidences_count": len(confidences)},
+                artifacts_created=[s.links_db_path] if s.links_db_path and os.path.isfile(s.links_db_path) else [],
+                fatal_reason=None if ok2 else step3_link_msg,
+            )
+            write_stage_report(_sr_link, _report_dir)
+            log_info(_sr_link.one_liner())
+        except Exception:
+            pass
+
+        # ── Stage Report: Materialize/Legends ──
+        try:
+            _mat_ok = getattr(s, 'step3_basemap_done', False)
+            _sr_mat = StageReport(
+                stage="materialize_legends", stage_number=5,
+                status="PASS" if _mat_ok else ("SKIPPED" if not links_db_valid else "FAIL"),
+                inputs={"links_db": s.links_db_path},
+                metrics={"linked_objects": s.step2_linked_objects},
+                artifacts_created=[],
+                fatal_reason=None if _mat_ok else "Linking prerequisite not met or materialize failed",
+            )
+            write_stage_report(_sr_mat, _report_dir)
+            log_info(_sr_mat.one_liner())
+        except Exception:
+            pass
+
+        # ── Pipeline Summary (one-liner per stage) ──
+        try:
+            pipeline_summary = summarize_reports(_report_dir)
+            log_info(f"[PIPELINE] === STAGE SUMMARY ===\n{pipeline_summary}")
+        except Exception:
+            pass
 
         # Write link report
         try:

@@ -2252,6 +2252,9 @@ def _materialize_osm_features(mesh, osm_id_attr, gpkg_path):
             print(f"  FEATURE NOT FOUND in {feature_source}! (no row for this osm_id)")
 
     # Step 5: Create FACE STRING attributes + has_feature INT (proof attribute)
+    # NOTE: STRING FACE attributes are intermediate — Phase 5 encodes them to INT codes.
+    # Blender docs warn that STRING attributes on large meshes degrade Spreadsheet performance.
+    # The *_code INT attributes (Phase 5) are the canonical columns for Spreadsheet/analysis.
     print("[OSM Features] Creating FACE STRING attributes...")
     
     # Define CODE_KEYS if not already imported
