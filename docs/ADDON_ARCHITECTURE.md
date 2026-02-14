@@ -1,6 +1,6 @@
 # Academic Context
 
-This add-on was developed as part of an academic research project at RWTH Aachen University (Design Computation).
+This add-on was developed as part of an academic research project at RWTH Aachen University (Design Computation) under the supervision of Prof. Dr. Jakob Beetz.
 
 Its purpose is to explore reproducible, phase-based integration of heterogeneous urban datasets (CityGML, OSM, terrain) inside Blender.
 
@@ -13,9 +13,12 @@ The architecture prioritizes:
 
 It is not designed as a production GIS pipeline but as an experimental integration framework for research and teaching.
 
+> **Hinweis:**
+> Diese Arbeit entstand an der RWTH Aachen University im Kontext der Design-Computation-Lehre unter der Betreuung von Prof. Dr. Jakob Beetz. Sie untersucht offene, reproduzierbare Methoden zur räumlich-semantischen Integration urbaner Geodaten und Modelle. Alle verwendeten Materialien stammen aus öffentlich zugänglichen Quellen und werden ausschließlich zu wissenschaftlichen Zwecken genutzt.
+
 ---
 
-# Add-on Architecture — Deterministic Pipeline Edition
+## Add-on Architecture — Deterministic Pipeline Edition
 
 This document defines the architectural contracts of the CityGML-OSM-LINK add-on.
 It supersedes informal descriptions and serves as the binding reference for pipeline behavior.

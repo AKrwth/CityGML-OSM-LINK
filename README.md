@@ -50,6 +50,9 @@ This repository:
 
 The goal is methodological transparency, not commercial deployment.
 
+> **Hinweis:**
+> Diese Arbeit entstand an der RWTH Aachen University im Kontext der Design-Computation-Lehre unter der Betreuung von Prof. Dr. Jakob Beetz. Sie untersucht offene, reproduzierbare Methoden zur räumlich-semantischen Integration urbaner Geodaten und Modelle. Alle verwendeten Materialien stammen aus öffentlich zugänglichen Quellen und werden ausschließlich zu wissenschaftlichen Zwecken genutzt.
+
 ### Research Software Notice
 
 This codebase is developed in the context of research exploration.
@@ -110,6 +113,23 @@ Attribute writes use schema enforcement: domain must be `FACE`, data type must m
 `output_dir` can be deleted safely between runs. The pipeline recreates all artifacts deterministically from source inputs. Intermediate databases use mtime-based staleness detection to trigger rebuilds.
 
 For full architectural detail, see [docs/ADDON_ARCHITECTURE.md](docs/ADDON_ARCHITECTURE.md).
+
+## Repo Hygiene
+
+### What is committed vs. generated
+
+| Committed (tracked) | Generated (ignored) |
+| --- | --- |
+| All Python source (`pipeline/`, `utils/`, `ops.py`, etc.) | `output_dir/` — link databases, legend CSVs, reports |
+| Documentation (`docs/*.md`, `docs/Images/`) | `__pycache__/`, `*.pyc` |
+| Config files (`requirements.txt`, `environment.yml`, `.gitignore`) | `*.blend1`, `*.log` |
+| `settings.py`, `ui.py`, `auto_load.py` | `docs/dev/`, `docs/_archive/`, `docs/legacy/` |
+
+### How to clean `output_dir` safely
+
+- **For a clean re-run:** Delete the **contents** of `output_dir/` (all files and subdirectories inside it), but keep the folder itself. The pipeline will regenerate all artifacts deterministically from source inputs.
+- **For full reset:** Delete `output_dir/` entirely, then re-set the output directory path in the add-on panel before the next run.
+- `output_dir/` is gitignored — nothing inside it should ever be committed.
 
 ## Scientific context
 
