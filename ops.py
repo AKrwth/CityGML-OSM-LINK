@@ -1150,7 +1150,10 @@ def ensure_face_attr(mesh, name, data_type):
         except Exception:
             pass
         return None
-    return attr
+    # ALWAYS re-resolve via mesh.attributes.get() before returning.
+    # The handle we hold may have been invalidated by a prior .remove()/.new()
+    # inside this very function.  Re-fetching guarantees a live pointer.
+    return mesh.attributes.get(name)
 
 
 def _get_evaluated_mesh(context, obj):

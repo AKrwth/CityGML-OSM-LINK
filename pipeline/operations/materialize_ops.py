@@ -220,14 +220,15 @@ class M1DC_OT_MaterializeLinks(Operator):
                 iou_attr = ensure_face_attr_fn(mesh, "link_iou", "FLOAT")
                 has_attr = ensure_face_attr_fn(mesh, "has_link", "INT")
 
-                if not osm_attr:
-                    log_warn(f"[Materialize] P3: Cannot create osm_way_id for {mesh_obj.name}")
-                    continue
+                # ─── CRITICAL: Full RE-RESOLVE of ALL handles after creation ───
+                # mesh.attributes.new() invalidates ALL previously returned
+                # bpy_prop_collection references (Blender API caveat).
+                # After the ensure_face_attr_fn calls above, EVERY handle
+                # (including idx_attr and all output attrs) may be stale.
+                # We must re-resolve via mesh.attributes.get() BEFORE any
+                # data access.
 
-                # CRITICAL: Re-resolve idx_attr AFTER creating output attributes.
-                # Adding attributes to a mesh invalidates existing bpy_prop_collection
-                # references (Blender API caveat). Without this, idx_attr.data becomes
-                # a stale empty collection, causing IndexError.
+                # Re-resolve idx_attr (input)
                 idx_attr = None
                 for candidate in ("gml_building_idx", "gml__building_idx", "building_idx"):
                     a = mesh.attributes.get(candidate)
@@ -236,6 +237,46 @@ class M1DC_OT_MaterializeLinks(Operator):
                         break
                 if idx_attr is None:
                     log_warn(f"[Materialize] P3: {mesh_obj.name} building_idx invalidated after attr creation, skipping")
+                    continue
+
+                # Re-resolve ALL output handles
+                osm_attr = mesh.attributes.get("osm_way_id")
+                osm_id_int_attr = mesh.attributes.get("osm_id_int")
+                conf_attr = mesh.attributes.get("link_conf")
+                dist_attr = mesh.attributes.get("link_dist_m")
+                iou_attr = mesh.attributes.get("link_iou")
+                has_attr = mesh.attributes.get("has_link")
+
+                if not osm_attr:
+                    log_warn(f"[Materialize] P3: Cannot create/resolve osm_way_id for {mesh_obj.name}")
+                    continue
+
+                # PROOF: verify every output handle has len(data) == face_count
+                _p3_handles = {
+                    "osm_way_id": osm_attr,
+                    "osm_id_int": osm_id_int_attr,
+                    "link_conf": conf_attr,
+                    "link_dist_m": dist_attr,
+                    "link_iou": iou_attr,
+                    "has_link": has_attr,
+                }
+                _p3_ok = True
+                for _hn, _hv in _p3_handles.items():
+                    if _hv is None:
+                        _log_info(f"[PROOF][P3_RESOLVE] {mesh_obj.name}.{_hn} = None (optional)")
+                        continue
+                    _hlen = len(_hv.data)
+                    if _hlen != face_count:
+                        _log_info(
+                            f"[PROOF][P3_RESOLVE][FAIL] {mesh_obj.name}.{_hn} "
+                            f"len(data)={_hlen} != face_count={face_count}"
+                        )
+                        _p3_ok = False
+                if not _p3_ok:
+                    log_warn(
+                        f"[Materialize] P3: {mesh_obj.name} output attr data length mismatch "
+                        f"after re-resolve — skipping (bpy_prop_collection invalidation)"
+                    )
                     continue
 
                 # [PROOF] Pre-loop: count how many link_map entries match this tile
