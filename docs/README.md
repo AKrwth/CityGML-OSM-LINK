@@ -1,8 +1,6 @@
 # Documentation
 
-<p align="center">
-  <img src="Images/CityGML-OSM-LINK.png" width="700">
-</p>
+![CityGML-OSM-LINK](Images/CityGML-OSM-LINK.png)
 
 This is the technical documentation entry point for the CityGML-OSM-LINK Blender add-on.
 Use the repository root README for quick onboarding and this document for deeper internals.
@@ -54,10 +52,10 @@ If GDAL import errors occur (`from osgeo import gdal`), verify that:
 ## Scientific and standards anchors
 
 - OGC CityGML standard family (semantic 3D city model source format)
-  - https://www.ogc.org/standards/citygml/
+  - <https://www.ogc.org/standards/citygml/>
 - OGC GeoPackage Encoding Standard (OSM-derived tabular/vector container in this project)
-  - https://www.ogc.org/standards/geopackage/
+  - <https://www.ogc.org/standards/geopackage/>
 - Blender Manual (general platform behavior and numerical constraints context)
-  - https://docs.blender.org/manual/en/latest/
+  - <https://docs.blender.org/manual/en/latest/>
 - GDAL/OGR documentation (compiled geospatial I/O stack used by this repository)
-  - https://gdal.org/
+  - <https://gdal.org/>
