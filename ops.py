@@ -1331,17 +1331,23 @@ def _resolve_feature_db_path() -> str:
     except Exception:
         pass
 
-    # Priority 2: output_dir scan
+    # Priority 2: output_dir scan (canonical location: output_dir/links/ per artifact contract)
     try:
         out = get_output_dir()
         if out and out.exists():
-            # Scan *_links.sqlite first (pipeline output), then *_linkdb.sqlite
-            for pattern in ("*_links.sqlite", "*_linkdb.sqlite"):
-                for fp in sorted(out.glob(pattern)):
-                    if fp.is_file():
-                        st = fp.stat()
-                        candidates.append((str(fp), st.st_size, st.st_mtime, f"glob:{pattern}"))
-                        print(f"[PROOF][FEATURE_DB] candidate={fp} exists=True size={st.st_size} mtime={st.st_mtime} source=glob:{pattern}")
+            # Scan CANONICAL location first: output_dir/links/
+            links_subdir = out / "links"
+            scan_dirs = [links_subdir, out]  # canonical first, then root (legacy)
+            for scan_dir in scan_dirs:
+                if not scan_dir.is_dir():
+                    continue
+                for pattern in ("*_links.sqlite", "*_linkdb.sqlite"):
+                    for fp in sorted(scan_dir.glob(pattern)):
+                        if fp.is_file():
+                            st = fp.stat()
+                            source_tag = f"links_subdir:{pattern}" if scan_dir == links_subdir else f"glob:{pattern}"
+                            candidates.append((str(fp), st.st_size, st.st_mtime, source_tag))
+                            print(f"[PROOF][FEATURE_DB] candidate={fp} exists=True size={st.st_size} mtime={st.st_mtime} source={source_tag}")
     except Exception:
         pass
 
@@ -4064,13 +4070,12 @@ def _link_gpkg_to_citygml(s):
                 cur.execute("SELECT confidence FROM gml_osm_links WHERE confidence IS NOT NULL")
                 confidences = [r[0] for r in cur.fetchall()]
 
-                # Count distinct tiles
+                # Count distinct tiles (gml_osm_links table has source_tile column)
                 try:
-                    cur.execute("SELECT COUNT(DISTINCT source_tile) FROM gml_centroids")
+                    cur.execute("SELECT COUNT(DISTINCT source_tile) FROM gml_osm_links")
                     tiles_row = cur.fetchone()
                     tiles_count = tiles_row[0] if tiles_row else 0
                 except Exception:
-                    # gml_centroids may be in a separate DB
                     tiles_count = 0
 
                 conn.close()

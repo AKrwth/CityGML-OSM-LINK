@@ -102,6 +102,11 @@ class M1DC_OT_LinkCityGMLtoOSM(Operator):
             log_info(f"[Link][Artifacts] links_db_path set to: {link_db}")
             log_info(f"[Link][Artifacts] file exists: True size={db_size}")
 
+            # ── NO-SILENT-SUCCESS: Warn if 0 buildings matched (DB exists but no links) ──
+            if linked == 0:
+                log_warn(f"[Link][Artifacts] WARNING: Link DB created but 0 buildings matched. "
+                         f"Check WORLD_ORIGIN, CRS units, and centroid overlap.")
+
             # Display summary
             summary_lines = [
                 f"Linking Summary:",

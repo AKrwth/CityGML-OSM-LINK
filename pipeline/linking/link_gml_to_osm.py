@@ -105,6 +105,21 @@ def is_verbose_debug() -> bool:
     return sys.gettrace() is not None
 
 
+def _bbox_iou(minx1, miny1, maxx1, maxy1, minx2, miny2, maxx2, maxy2) -> float:
+    """Compute 2D bounding-box IoU (intersection over union). Returns 0.0 if no overlap."""
+    ix1 = max(minx1, minx2)
+    iy1 = max(miny1, miny2)
+    ix2 = min(maxx1, maxx2)
+    iy2 = min(maxy1, maxy2)
+    if ix2 <= ix1 or iy2 <= iy1:
+        return 0.0
+    inter = (ix2 - ix1) * (iy2 - iy1)
+    a1 = max(0.0, (maxx1 - minx1) * (maxy1 - miny1))
+    a2 = max(0.0, (maxx2 - minx2) * (maxy2 - miny2))
+    union = a1 + a2 - inter
+    return inter / union if union > 0 else 0.0
+
+
 def ensure_schema(conn_out: sqlite3.Connection) -> None:
     cur = conn_out.cursor()
     cur.execute("PRAGMA journal_mode=WAL;")
@@ -118,6 +133,7 @@ def ensure_schema(conn_out: sqlite3.Connection) -> None:
         osm_way_id    TEXT,
         dist_m        REAL,
         confidence    REAL,
+        iou           REAL DEFAULT 0.0,
         cx_gml        REAL NOT NULL,
         cy_gml        REAL NOT NULL,
         cx_osm        REAL,
@@ -221,12 +237,32 @@ def main(min_e: float = 0.0, min_n: float = 0.0):
     DETAIL_LIMIT = 3 if not verbose else total_tiles
     PROGRESS_INTERVAL = 10
 
+    # Check if OSM table has bbox columns for IoU computation
+    osm_has_bbox = all(
+        column_exists(conn_osm, osm_table, c) for c in ("minx", "miny", "maxx", "maxy")
+    )
+    if osm_has_bbox:
+        print(f"[Link] OSM table has bbox columns — will compute IoU")
+    else:
+        print(f"[Link] OSM table lacks bbox columns — iou will be 0.0")
+
+    # Check if GML table has bbox columns
+    gml_has_bbox = all(
+        column_exists(conn_gml, GML_TABLE, c) for c in ("minx", "miny", "maxx", "maxy")
+    )
+
     for ti, tile_name in enumerate(tiles, start=1):
-        # Load all GML buildings for tile
-        gml_rows = conn_gml.execute(
-            f"SELECT building_idx, cx, cy FROM {GML_TABLE} WHERE source_tile=? ORDER BY building_idx;",
-            (tile_name,)
-        ).fetchall()
+        # Load all GML buildings for tile (include bbox if available for IoU)
+        if gml_has_bbox:
+            gml_rows = conn_gml.execute(
+                f"SELECT building_idx, cx, cy, minx, miny, maxx, maxy FROM {GML_TABLE} WHERE source_tile=? ORDER BY building_idx;",
+                (tile_name,)
+            ).fetchall()
+        else:
+            gml_rows = conn_gml.execute(
+                f"SELECT building_idx, cx, cy FROM {GML_TABLE} WHERE source_tile=? ORDER BY building_idx;",
+                (tile_name,)
+            ).fetchall()
 
         if not gml_rows:
             continue
@@ -240,37 +276,68 @@ def main(min_e: float = 0.0, min_n: float = 0.0):
         else:
             xs = [r[1] for r in gml_rows]
             ys = [r[2] for r in gml_rows]
-        minx = min(xs) - SEARCH_RADIUS_M
-        maxx = max(xs) + SEARCH_RADIUS_M
-        miny = min(ys) - SEARCH_RADIUS_M
-        maxy = max(ys) + SEARCH_RADIUS_M
+        tile_minx = min(xs) - SEARCH_RADIUS_M
+        tile_maxx = max(xs) + SEARCH_RADIUS_M
+        tile_miny = min(ys) - SEARCH_RADIUS_M
+        tile_maxy = max(ys) + SEARCH_RADIUS_M
 
-        # Pull OSM candidates in bbox (single query per tile)
-        osm_rows = conn_osm.execute(
-            f"""
-            SELECT osm_way_id, cx, cy
-                        FROM {osm_table}
-            WHERE osm_way_id IS NOT NULL
-              AND cx BETWEEN ? AND ?
-              AND cy BETWEEN ? AND ?;
-            """,
-            (minx, maxx, miny, maxy)
-        ).fetchall()
+        # Pull OSM candidates in bbox (single query per tile, include bbox for IoU if available)
+        if osm_has_bbox:
+            osm_rows = conn_osm.execute(
+                f"""
+                SELECT osm_way_id, cx, cy, minx, miny, maxx, maxy
+                FROM {osm_table}
+                WHERE osm_way_id IS NOT NULL
+                  AND cx BETWEEN ? AND ?
+                  AND cy BETWEEN ? AND ?;
+                """,
+                (tile_minx, tile_maxx, tile_miny, tile_maxy)
+            ).fetchall()
+        else:
+            osm_rows = conn_osm.execute(
+                f"""
+                SELECT osm_way_id, cx, cy
+                FROM {osm_table}
+                WHERE osm_way_id IS NOT NULL
+                  AND cx BETWEEN ? AND ?
+                  AND cy BETWEEN ? AND ?;
+                """,
+                (tile_minx, tile_maxx, tile_miny, tile_maxy)
+            ).fetchall()
 
-        # Build in-memory grid index for OSM candidates
-        grid: Dict[Tuple[int, int], List[Tuple[str, float, float]]] = {}
-        for osm_way_id, cx, cy in osm_rows:
+        # Build in-memory grid index for OSM candidates (include bbox for IoU)
+        # Grid stores: (osm_way_id, cx, cy, minx, miny, maxx, maxy) or (osm_way_id, cx, cy, None, None, None, None)
+        grid: Dict[Tuple[int, int], List[Tuple]] = {}
+        for osm_row in osm_rows:
+            osm_way_id = osm_row[0]
+            cx, cy = osm_row[1], osm_row[2]
+            if osm_has_bbox and len(osm_row) >= 7:
+                osm_bbox = (osm_row[3], osm_row[4], osm_row[5], osm_row[6])
+            else:
+                osm_bbox = (None, None, None, None)
             k = grid_key(cx, cy, GRID_CELL_M)
-            grid.setdefault(k, []).append((osm_way_id, cx, cy))
+            grid.setdefault(k, []).append((osm_way_id, cx, cy, *osm_bbox))
 
         # Match each GML point against nearby grid cells
         r2 = SEARCH_RADIUS_M * SEARCH_RADIUS_M
 
-        for building_idx, gx_raw, gy_raw in gml_rows:
+        for gml_row in gml_rows:
+            building_idx = gml_row[0]
+            gx_raw, gy_raw = gml_row[1], gml_row[2]
+            # Extract GML bbox for IoU if available
+            if gml_has_bbox and len(gml_row) >= 7:
+                gml_bbox = (gml_row[3], gml_row[4], gml_row[5], gml_row[6])
+            else:
+                gml_bbox = None
+
             if shift_gml:
                 # Apply WORLD_ORIGIN offset to convert from CRS to local coords
                 gx = gx_raw - min_e
                 gy = gy_raw - min_n
+                # Also shift GML bbox if present
+                if gml_bbox:
+                    gml_bbox = (gml_bbox[0] - min_e, gml_bbox[1] - min_n,
+                                gml_bbox[2] - min_e, gml_bbox[3] - min_n)
             else:
                 # OSM is in CRS; use raw CRS GML coords
                 gx = gx_raw
@@ -281,6 +348,7 @@ def main(min_e: float = 0.0, min_n: float = 0.0):
             best_cx = None
             best_cy = None
             best_d2 = None
+            best_osm_bbox = (None, None, None, None)
 
             # search in neighbor cells (3x3 is usually enough when cell ~= radius)
             for dx_cell in (-1, 0, 1):
@@ -289,19 +357,21 @@ def main(min_e: float = 0.0, min_n: float = 0.0):
                     pts = grid.get(cell)
                     if not pts:
                         continue
-                    for osm_way_id, ox, oy in pts:
-                        d2 = dist2(gx, gy, ox, oy)
-                        if d2 <= r2 and (best_d2 is None or d2 < best_d2):
-                            best_d2 = d2
+                    for pt in pts:
+                        osm_way_id, ox, oy = pt[0], pt[1], pt[2]
+                        d2_val = dist2(gx, gy, ox, oy)
+                        if d2_val <= r2 and (best_d2 is None or d2_val < best_d2):
+                            best_d2 = d2_val
                             best_id = osm_way_id
                             best_cx = ox
                             best_cy = oy
+                            best_osm_bbox = (pt[3], pt[4], pt[5], pt[6]) if len(pt) >= 7 else (None, None, None, None)
 
             if best_id is None:
                 # no match
                 cur_out.execute(
-                    f"INSERT INTO {OUT_TABLE} VALUES (?,?,?,?,?,?,?,?,?)",
-                    (tile_name, building_idx, None, None, 0.0, gx, gy, None, None)
+                    f"INSERT INTO {OUT_TABLE} VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    (tile_name, building_idx, None, None, 0.0, 0.0, gx, gy, None, None)
                 )
                 unmatched += 1
                 continue
@@ -312,8 +382,8 @@ def main(min_e: float = 0.0, min_n: float = 0.0):
             if conf < MIN_CONFIDENCE:
                 # treat as unmatched if below threshold
                 cur_out.execute(
-                    f"INSERT INTO {OUT_TABLE} VALUES (?,?,?,?,?,?,?,?,?)",
-                    (tile_name, building_idx, None, None, 0.0, gx, gy, None, None)
+                    f"INSERT INTO {OUT_TABLE} VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    (tile_name, building_idx, None, None, 0.0, 0.0, gx, gy, None, None)
                 )
                 unmatched += 1
                 continue
@@ -321,9 +391,20 @@ def main(min_e: float = 0.0, min_n: float = 0.0):
             if d is not None and d > MAX_DIST_FOR_WARN:
                 suspicious += 1
 
+            # Compute bbox IoU if both sides have bboxes
+            iou = 0.0
+            if gml_bbox and best_osm_bbox[0] is not None:
+                try:
+                    iou = _bbox_iou(
+                        gml_bbox[0], gml_bbox[1], gml_bbox[2], gml_bbox[3],
+                        best_osm_bbox[0], best_osm_bbox[1], best_osm_bbox[2], best_osm_bbox[3]
+                    )
+                except Exception:
+                    iou = 0.0
+
             cur_out.execute(
-                f"INSERT INTO {OUT_TABLE} VALUES (?,?,?,?,?,?,?,?,?)",
-                (tile_name, building_idx, best_id, float(d), float(conf), gx, gy, float(best_cx), float(best_cy))
+                f"INSERT INTO {OUT_TABLE} VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (tile_name, building_idx, best_id, float(d), float(conf), float(iou), gx, gy, float(best_cx), float(best_cy))
             )
             matched += 1
 

@@ -106,6 +106,24 @@ def ensure_osm_local_table(linkdb_path: Path, min_e: float, min_n: float, semant
         log_fn(f"[LinkDB] Semantic columns preserved: {sem_cols}")
 
         cur.execute("DROP TABLE IF EXISTS osm_building_link_local;")
+
+        # Include bbox columns (shifted) for IoU computation in linker
+        bbox_cols = ["minx", "miny", "maxx", "maxy"]
+        has_bbox = all(c in available for c in bbox_cols)
+        if has_bbox:
+            bbox_select = (
+                ",\n            (minx - ?) AS minx,"
+                "\n            (miny - ?) AS miny,"
+                "\n            (maxx - ?) AS maxx,"
+                "\n            (maxy - ?) AS maxy"
+            )
+            bbox_params = (min_e, min_n, min_e, min_n)
+            log_fn(f"[LinkDB] Including shifted bbox columns for IoU")
+        else:
+            bbox_select = ""
+            bbox_params = ()
+            log_fn(f"[LinkDB] No bbox columns in osm_building_link; IoU will be 0.0")
+
         cur.execute(
             f"""
                 CREATE TABLE osm_building_link_local AS
@@ -113,11 +131,12 @@ def ensure_osm_local_table(linkdb_path: Path, min_e: float, min_n: float, semant
                     osm_way_id,
                     (cx - ?) AS cx,
                     (cy - ?) AS cy
+                    {bbox_select}
                     {select_sem}
                 FROM osm_building_link
                 WHERE osm_way_id IS NOT NULL;
                 """,
-            (min_e, min_n),
+            (min_e, min_n, *bbox_params),
         )
         cur.execute("CREATE INDEX IF NOT EXISTS idx_osm_local_xy ON osm_building_link_local(cx, cy);")
         n = cur.execute("SELECT COUNT(*) FROM osm_building_link_local;").fetchone()[0]

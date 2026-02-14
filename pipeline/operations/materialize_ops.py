@@ -323,27 +323,39 @@ class M1DC_OT_MaterializeLinks(Operator):
             # Force global depsgraph update so Spreadsheet viewer refreshes
             bpy.context.view_layer.update()
 
+            # ── NO-SILENT-SUCCESS GATE: Phase 3 must have linked at least 1 face ──
+            if total_linked_faces == 0 and len(link_map) > 0:
+                msg = (
+                    f"[Materialize] CANCELLED: Phase 3 wrote 0 linked faces despite "
+                    f"{len(link_map)} link_map entries. This indicates a key mismatch "
+                    f"(source_tile normalization or building_idx). Check proof logs above."
+                )
+                log_error(msg)
+                self.report({"ERROR"}, "0 linked faces written — key mismatch. Check console.")
+                return {"CANCELLED"}
+
             # Phase 4: Materialize OSM features (building, amenity, name, etc.)
             p4_total = 0
             if self.include_features and s.gpkg_path:
                 _log_info(f"[Materialize] P4: Materializing OSM features from {s.gpkg_path}")
                 if total_linked_faces == 0:
-                    _log_info("[Materialize] P4: 0 linked faces from P3 — P4 will likely find no osm_ids to look up")
-                for mesh_obj in mesh_objs:
-                    try:
-                        from ... import ops as ops_module
-                        materialize_osm_features = getattr(ops_module, "_materialize_osm_features", None)
-                        if materialize_osm_features and callable(materialize_osm_features):
-                            written_count = materialize_osm_features(
-                                mesh_obj.data,
-                                osm_id_attr=None,  # Will detect internally
-                                gpkg_path=s.gpkg_path
-                            )
-                            p4_total += (written_count or 0)
-                            log_info(f"[Materialize] Phase 4: {mesh_obj.name} wrote {written_count} features")
-                    except Exception as ex:
-                        log_warn(f"[Materialize] Phase 4 for {mesh_obj.name}: {ex}")
-                        continue
+                    _log_info("[Materialize] P4: 0 linked faces from P3 — skipping Phase 4/5")
+                else:
+                    for mesh_obj in mesh_objs:
+                        try:
+                            from ... import ops as ops_module
+                            materialize_osm_features = getattr(ops_module, "_materialize_osm_features", None)
+                            if materialize_osm_features and callable(materialize_osm_features):
+                                written_count = materialize_osm_features(
+                                    mesh_obj.data,
+                                    osm_id_attr=None,  # Will detect internally
+                                    gpkg_path=s.gpkg_path
+                                )
+                                p4_total += (written_count or 0)
+                                log_info(f"[Materialize] Phase 4: {mesh_obj.name} wrote {written_count} features")
+                        except Exception as ex:
+                            log_warn(f"[Materialize] Phase 4 for {mesh_obj.name}: {ex}")
+                            continue
                 _log_info(f"[PROOF][P4_READBACK] total_features_written={p4_total} meshes={len(mesh_objs)}")
             else:
                 _log_info("[Materialize] P4: Skipped (include_features=False or no gpkg_path)")

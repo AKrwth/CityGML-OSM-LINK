@@ -115,6 +115,18 @@ class M1DC_OT_BuildLegends(Operator):
 
             context.scene["M1DC_LEGEND_INDEX"] = str(legend_index)  # Store as JSON string
 
+            # ── NO-SILENT-SUCCESS: Verify legend CSVs exist on disk ──
+            verified_count = 0
+            for col_info in columns:
+                if os.path.isfile(col_info.get('legend_path', '')):
+                    verified_count += 1
+            if verified_count == 0 and len(columns) > 0:
+                error_msg = "Legend CSVs reported but none found on disk"
+                log_error(f"[Legends] {error_msg}")
+                self.report({"ERROR"}, error_msg)
+                return {"CANCELLED"}
+            log_info(f"[Legends] Verified {verified_count}/{len(columns)} legend CSV files on disk")
+
             success_msg = f"Built {len(columns)} legends for table '{table_name}'"
             self.report({"INFO"}, success_msg)
             log_info(f"[Legends] {success_msg}")
