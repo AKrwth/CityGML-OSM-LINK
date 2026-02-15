@@ -787,6 +787,12 @@ class M1DCSettings(PropertyGroup):
         max=1.0,
     )
 
+    terrain_auto_snap_to_city: BoolProperty(
+        name="Auto-Snap Terrain to City Center (XY)",
+        description="After pipeline import, auto-snap terrain XY center onto CityGML tile-grid center. Pure translation, Z unchanged.",
+        default=True,
+    )
+
     skip_terrain_validation: BoolProperty(
         name="Skip Terrain Validation",
         description="DEBUG: Skip terrain coverage/Z validation gate entirely. Linking + Materialize proceed even without valid terrain. Not for production runs.",

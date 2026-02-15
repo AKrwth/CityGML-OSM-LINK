@@ -1,7 +1,7 @@
 bl_info = {
     "name": "M1_DC_V6",
     "author": "Alixnova Akhai (akhai-labs)",
-    "version": (6, 11, 14),
+    "version": (6, 11, 15),
     "blender": (4, 5, 3),
     "location": "View3D > Sidebar > M1_DC_V6",
     "description": "Minimal pipeline UI for CityGML + GPKG + BaseMap (GeoTIFF tiles) with clean status + run operator.",

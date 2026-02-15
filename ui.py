@@ -508,6 +508,7 @@ class M1DC_PT_Pipeline(Panel):
 
                 center_row = adv_steps.row(align=True)
                 center_row.operator("m1dc.terrain_snap_to_city_center", text="Snap to City Center (XY)", icon="PIVOT_MEDIAN")
+                adv_steps.prop(s, "terrain_auto_snap_to_city", text="Auto-Snap to City Center after Pipeline")
 
                 z_row = adv_steps.row(align=True)
                 z_row.prop(s, "terrain_z_exaggeration", text="Z Scale")

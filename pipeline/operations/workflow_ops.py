@@ -501,6 +501,26 @@ class M1DC_OT_RunPipeline(Operator):
                 import traceback
                 traceback.print_exc()
 
+        # ── Phase 2.3: AUTO-SNAP terrain XY to CityGML center (post-step) ──
+        # Runs AFTER bbox-fit (Phase 2.2) and AFTER CityGML import so CITYGML_TILES exists.
+        # Pure XY translation — no scaling, no rotation, Z unchanged.
+        if ok3 and ok1 and getattr(s, "terrain_auto_snap_to_city", True):
+            log_info("[Pipeline] PHASE 2.3: AUTO-SNAP terrain XY to CityGML center")
+            try:
+                from ..terrain.terrain_snap_to_city_center import snap_terrain_to_city_center_xy
+                snap_result = snap_terrain_to_city_center_xy()
+                if snap_result.get("ok"):
+                    dx, dy = snap_result["delta"]
+                    cx, cy = snap_result["city_center"]
+                    log_info(f"[Pipeline] Phase 2.3: ✓ Terrain snapped to city center: "
+                             f"city=({cx}, {cy}), delta=({dx}, {dy})")
+                else:
+                    log_warn(f"[Pipeline] Phase 2.3: Snap skipped: {snap_result.get('error')}")
+            except Exception as snap_ex:
+                log_warn(f"[Pipeline] Phase 2.3: Auto-snap failed (non-fatal): {snap_ex}")
+        elif ok3 and ok1:
+            log_info("[Pipeline] Phase 2.3: Auto-snap disabled (terrain_auto_snap_to_city=False)")
+
         # Step 2.5: VALIDATION & AUTO-CORRECTION (Terrain + CityGML alignment)
         # ARCHITECTURE: Terrain validation gates terrain-dependent steps ONLY.
         # Linking/Materialize/Legends do NOT require terrain and proceed regardless.
