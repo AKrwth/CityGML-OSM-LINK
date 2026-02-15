@@ -6,11 +6,13 @@
 
 Deterministic spatial integration of CityGML and OpenStreetMap inside Blender.
 
+<!-- markdownlint-disable MD033 -->
 <p align="center">
   <a href="docs/Images/Einleitung_CityGML_OSM_LINK.mp4">
     <img src="docs/Images/intro_thumbnail.svg" width="800" alt="Introduction Video Thumbnail">
   </a>
 </p>
+<!-- markdownlint-enable MD033 -->
 
 Research-oriented Blender add-on for integrating CityGML, OSM (GeoPackage), and terrain/raster data into one inspectable scene.
 
