@@ -8,7 +8,7 @@ Deterministic spatial integration of CityGML and OpenStreetMap inside Blender.
 
 <p align="center">
   <a href="docs/Images/Einleitung_CityGML_OSM_LINK.mp4">
-    <img src="docs/Images/intro_thumbnail.png" width="800" alt="Introduction Video Thumbnail">
+    <img src="docs/Images/intro_thumbnail.svg" width="800" alt="Introduction Video Thumbnail">
   </a>
 </p>
 
