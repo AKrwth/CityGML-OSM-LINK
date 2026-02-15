@@ -46,6 +46,9 @@ from .terrain_ops import (
     M1DC_OT_TerrainAlignToCity,
     M1DC_OT_TerrainBakeScale,
     M1DC_OT_TerrainAlignXYMinCorner,
+    M1DC_OT_TerrainSnapXYToTiles,
+    M1DC_OT_TerrainSetZScale,
+    M1DC_OT_TerrainSnapToCityCenter,
 )
 
 from .op_terrain_fit import (
@@ -83,6 +86,8 @@ from .inspector_ops import (
     M1DC_OT_InspectorClearQuery,
     M1DC_OT_InspectorZoomToSelection,
     M1DC_OT_InspectorExportReport,
+    M1DC_OT_InspectorLegendDecode,
+    M1DC_OT_InspectorApplyDSL,
 )
 
 from .face_attr_ops import (
@@ -145,6 +150,9 @@ __all__ = [
     "M1DC_OT_TerrainAlignToCity",
     "M1DC_OT_TerrainBakeScale",
     "M1DC_OT_TerrainAlignXYMinCorner",
+    "M1DC_OT_TerrainSnapXYToTiles",
+    "M1DC_OT_TerrainSetZScale",
+    "M1DC_OT_TerrainSnapToCityCenter",
     "M1DC_OT_TerrainFitBBox",
     # CityGML operators (2)
     "M1DC_OT_RelocalizeCityGML",
@@ -169,6 +177,10 @@ __all__ = [
     "M1DC_OT_InspectorClearQuery",
     "M1DC_OT_InspectorZoomToSelection",
     "M1DC_OT_InspectorExportReport",
+    "M1DC_OT_InspectorLegendDecode",
+    "M1DC_OT_InspectorApplyDSL",
+    # Terrain snap to city center (1)
+    "M1DC_OT_TerrainSnapToCityCenter",
     # Face attribute operators (7)
     "M1DC_OT_DebugFaceAttrs",
     "M1DC_OT_BakeEvalFaceIntAttrs",

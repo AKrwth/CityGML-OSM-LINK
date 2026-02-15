@@ -8,6 +8,7 @@ from bpy.props import (
     IntProperty,
     CollectionProperty,
     EnumProperty,
+    PointerProperty,
 )
 
 
@@ -21,7 +22,11 @@ def _on_spreadsheet_table_changed(self, context):
 
 
 def _on_inspector_preset_changed(self, context):
-    """When inspector query preset changes, auto-fill query text."""
+    """When inspector query preset changes, auto-fill query text.
+
+    Presets use INT code attributes (osm_*_code > 0 or osm_*_code=<value>)
+    for reliable filtering. Text values are resolved to codes via legend CSV.
+    """
     preset_queries = {
         "UNIV": "amenity=university",
         "SCHOOL": "amenity=school",
@@ -92,6 +97,30 @@ class M1DCDecodedAttrRow(PropertyGroup):
     attr_name: StringProperty(name="Attribute", default="")
     code_value: IntProperty(name="Code", default=0)
     decoded_value: StringProperty(name="Decoded", default="")
+
+
+class M1DC_InspectorRow(PropertyGroup):
+    """Generic row for Inspector query results (col0..col7, stringified)."""
+    col0: StringProperty(default="")
+    col1: StringProperty(default="")
+    col2: StringProperty(default="")
+    col3: StringProperty(default="")
+    col4: StringProperty(default="")
+    col5: StringProperty(default="")
+    col6: StringProperty(default="")
+    col7: StringProperty(default="")
+
+
+class M1DC_InspectorHeader(PropertyGroup):
+    """Column headers for Inspector SQL/DSL results (h0..h7)."""
+    h0: StringProperty(default="")
+    h1: StringProperty(default="")
+    h2: StringProperty(default="")
+    h3: StringProperty(default="")
+    h4: StringProperty(default="")
+    h5: StringProperty(default="")
+    h6: StringProperty(default="")
+    h7: StringProperty(default="")
 
 
 class M1DCSettings(PropertyGroup):
@@ -717,6 +746,31 @@ class M1DCSettings(PropertyGroup):
     inspector_decoded_attrs: CollectionProperty(type=M1DCDecodedAttrRow)
     inspector_decoded_attrs_index: IntProperty(name="Decoded Attr Index", default=0)
 
+    # -------- Inspector Query Result Buffer --------
+    inspector_rows: CollectionProperty(type=M1DC_InspectorRow)
+    inspector_row_count: IntProperty(name="Inspector Row Count", default=0, options={"HIDDEN"})
+    inspector_sql_mode: BoolProperty(
+        name="SQL Mode",
+        description="True when last query was raw SQL (not DSL)",
+        default=True,
+        options={"HIDDEN"},
+    )
+    inspector_sql_row_count: IntProperty(default=0, options={"HIDDEN"})
+    inspector_sql_col_count: IntProperty(default=0, options={"HIDDEN"})
+    inspector_sql_last_query: StringProperty(default="", options={"HIDDEN"})
+    inspector_sql_headers: PointerProperty(type=M1DC_InspectorHeader)
+
+    dsl_text: StringProperty(
+        name="DSL Filter",
+        description="Optional DSL filter on face attributes (e.g. amenity=school, building IN (house,apartments))",
+        default="",
+    )
+    dsl_faces_matched: IntProperty(default=0, options={"HIDDEN"})
+    dsl_unique_buildings: IntProperty(default=0, options={"HIDDEN"})
+    dsl_last: StringProperty(default="", options={"HIDDEN"})
+    dsl_tiles_preview: StringProperty(default="", options={"HIDDEN"})
+    dsl_sample_preview: StringProperty(default="", options={"HIDDEN"})
+
     # -------- Verbose Debug Toggle (PHASE 13) --------
     m1dc_verbose_debug: BoolProperty(
         name="Verbose Debug Logging",
@@ -737,4 +791,51 @@ class M1DCSettings(PropertyGroup):
         name="Skip Terrain Validation",
         description="DEBUG: Skip terrain coverage/Z validation gate entirely. Linking + Materialize proceed even without valid terrain. Not for production runs.",
         default=False,
+    )
+
+    terrain_z_exaggeration: FloatProperty(
+        name="Terrain Z Exaggeration",
+        description="Visual Z scale for terrain height exaggeration (visualization only, not metric). Default 20.0×",
+        default=20.0,
+        min=0.1,
+        max=500.0,
+        step=100,
+        precision=1,
+    )
+
+    # -------- Legend Decode (Inspector Mini-Section) --------
+    legend_decode_attr: EnumProperty(
+        name="Attribute",
+        description="Attribute name with _code suffix to decode",
+        items=[
+            ("building_code", "building_code", "Building type code"),
+            ("amenity_code", "amenity_code", "Amenity code"),
+            ("landuse_code", "landuse_code", "Land use code"),
+            ("shop_code", "shop_code", "Shop code"),
+            ("office_code", "office_code", "Office code"),
+            ("tourism_code", "tourism_code", "Tourism code"),
+            ("leisure_code", "leisure_code", "Leisure code"),
+            ("historic_code", "historic_code", "Historic code"),
+            ("man_made_code", "man_made_code", "Man-made code"),
+            ("aeroway_code", "aeroway_code", "Aeroway code"),
+        ],
+        default="amenity_code",
+    )
+    legend_decode_code: IntProperty(
+        name="Code",
+        description="Integer code to decode via legend CSV",
+        default=0,
+        min=0,
+    )
+    legend_decode_result: StringProperty(
+        name="Decoded Value",
+        description="Decoded string from legend lookup",
+        default="",
+        maxlen=1024,
+    )
+    legend_decode_status: StringProperty(
+        name="Decode Status",
+        description="Status of last decode operation",
+        default="",
+        options={"HIDDEN"},
     )

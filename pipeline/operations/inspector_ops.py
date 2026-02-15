@@ -206,6 +206,111 @@ class M1DC_OT_InspectorZoomToSelection(Operator):
             return {"CANCELLED"}
 
 
+class M1DC_OT_InspectorLegendDecode(Operator):
+    """Decode a single integer code via the combined legend CSV"""
+    bl_idname = "m1dc.inspector_legend_decode"
+    bl_label = "Decode"
+    bl_options = {"REGISTER", "INTERNAL"}
+
+    def execute(self, context):
+        s = _settings(context)
+        if s is None:
+            return {"CANCELLED"}
+
+        attr = s.legend_decode_attr  # e.g. "amenity_code"
+        code = int(s.legend_decode_code)
+
+        # Ensure legend caches are loaded
+        try:
+            from ...pipeline.diagnostics.legend_encoding import (
+                legend_decode, init_legend_caches, _DECODE_CACHE,
+            )
+        except ImportError as ex:
+            s.legend_decode_result = ""
+            s.legend_decode_status = f"IMPORT_ERROR: {ex}"
+            self.report({"ERROR"}, f"Legend module not available: {ex}")
+            return {"CANCELLED"}
+
+        # Auto-init caches from output_dir/legends/ if not loaded
+        if not _DECODE_CACHE:
+            import os
+            output_dir = getattr(s, "output_dir", "").strip()
+            if output_dir:
+                legends_dir = os.path.join(output_dir, "legends")
+                if os.path.isdir(legends_dir):
+                    legend_files = sorted([
+                        f for f in os.listdir(legends_dir)
+                        if f.endswith("_legend.csv")
+                    ])
+                    if legend_files:
+                        stem = legend_files[0].replace("_legend.csv", "")
+                        try:
+                            table_name, _ = stem.rsplit("__", 1)
+                            init_legend_caches(legends_dir, table_name)
+                        except ValueError:
+                            pass
+
+        if not _DECODE_CACHE:
+            s.legend_decode_result = ""
+            s.legend_decode_status = "CSV_MISSING"
+            self.report({"WARNING"}, "Legend caches not loaded (no CSV found)")
+            return {"FINISHED"}
+
+        decoded = legend_decode(attr, code)
+        if decoded == "":
+            s.legend_decode_result = ""
+            s.legend_decode_status = "NOT_FOUND"
+            try:
+                from ...utils.logging_system import log_info
+            except ImportError:
+                log_info = print
+            log_info(f"[Inspector][LegendDecode] attr={attr} code={code} -> NOT_FOUND")
+        else:
+            s.legend_decode_result = decoded
+            s.legend_decode_status = "OK"
+            try:
+                from ...utils.logging_system import log_info
+            except ImportError:
+                log_info = print
+            log_info(f"[Inspector][LegendDecode] attr={attr} code={code} -> {decoded} (OK)")
+
+        # Force UI redraw
+        try:
+            for area in context.screen.areas:
+                area.tag_redraw()
+        except Exception:
+            pass
+
+        self.report({"INFO"}, f"{attr} #{code} = {decoded or '(not found)'}")
+        return {"FINISHED"}
+
+
+class M1DC_OT_InspectorApplyDSL(Operator):
+    """Apply DSL filter on materialized face attributes (no DB)"""
+    bl_idname = "m1dc.inspector_apply_dsl"
+    bl_label = "Apply DSL"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        s = _settings(context)
+        if s is None:
+            return {"CANCELLED"}
+
+        try:
+            from ... import ops
+            _apply_dsl = getattr(ops, "_apply_dsl_filter_impl", None)
+            if not _apply_dsl:
+                self.report({"ERROR"}, "DSL filter logic not available")
+                return {"CANCELLED"}
+
+            matched = _apply_dsl(s)
+            self.report({"INFO"}, f"DSL matched {matched} faces")
+            return {"FINISHED"}
+        except Exception as ex:
+            self.report({"ERROR"}, f"DSL filter failed: {ex}")
+            return {"CANCELLED"}
+
+
 class M1DC_OT_InspectorExportReport(Operator):
     """Export inspector building list to CSV report"""
     bl_idname = "m1dc.inspector_export_report"

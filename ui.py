@@ -165,13 +165,33 @@ def _get_decoded_face_attrs(context, settings):
     # Read values and decode
     for attr_name, attr in sorted(target_attrs, key=lambda x: x[0]):
         try:
-            if attr.data_type == "INT":
-                code = attr.data[face_idx].value
-            elif attr.data_type == "FLOAT":
-                code = int(attr.data[face_idx].value)
-            else:
-                code = 0
-        except (IndexError, AttributeError):
+            # Guard: Blender 4.5 can return empty data arrays in Edit Mode.
+            # Fall back to evaluated depsgraph mesh if data is empty.
+            data_source = attr
+            if len(attr.data) == 0 or face_idx >= len(attr.data):
+                # Try evaluated mesh
+                try:
+                    depsgraph = bpy.context.evaluated_depsgraph_get()
+                    eval_obj = obj.evaluated_get(depsgraph)
+                    eval_mesh = eval_obj.data
+                    eval_attr = eval_mesh.attributes.get(attr_name)
+                    if eval_attr and len(eval_attr.data) > face_idx:
+                        data_source = eval_attr
+                    else:
+                        code = 0
+                        data_source = None  # skip read below
+                except Exception:
+                    code = 0
+                    data_source = None
+
+            if data_source is not None:
+                if attr.data_type == "INT":
+                    code = data_source.data[face_idx].value
+                elif attr.data_type == "FLOAT":
+                    code = int(data_source.data[face_idx].value)
+                else:
+                    code = 0
+        except (IndexError, AttributeError, RuntimeError):
             code = 0
 
         # Decode if it's a _code attribute
@@ -482,6 +502,17 @@ class M1DC_PT_Pipeline(Panel):
                 align_row.operator("m1dc.terrain_bake_scale", text="Bake Scale (1,1,1)", icon="OBJECT_ORIGIN")
                 align_row.operator("m1dc.terrain_align_xy_min_corner", text="Align XY (Min-Corner)", icon="SNAP_ON")
 
+                snap_row = adv_steps.row(align=True)
+                snap_row.operator("m1dc.terrain_snap_xy_to_tiles", text="Snap XY to Tiles", icon="SNAP_GRID")
+                snap_row.operator("m1dc.terrain_fit_bbox", text="Fit to CityGML BBox", icon="FULLSCREEN_ENTER")
+
+                center_row = adv_steps.row(align=True)
+                center_row.operator("m1dc.terrain_snap_to_city_center", text="Snap to City Center (XY)", icon="PIVOT_MEDIAN")
+
+                z_row = adv_steps.row(align=True)
+                z_row.prop(s, "terrain_z_exaggeration", text="Z Scale")
+                z_row.operator("m1dc.terrain_set_z_scale", text="Apply Z", icon="EMPTY_SINGLE_ARROW")
+
                 adv_steps.separator()
                 row_mat = adv_steps.row(align=True)
                 mat_op = row_mat.operator("m1dc.materialize_links", text="Materialize Links", icon="MODIFIER")
@@ -514,18 +545,18 @@ class M1DC_PT_Pipeline(Panel):
 
         if getattr(s, "ui_show_inspector", False):
             # ================================================================
-            # YELLOW BOX #1: INSPECTOR QUERY (Multiline Query Editor)
+            # YELLOW BOX #1: INSPECTOR QUERY (SQL Mode)
             # ================================================================
             query_box = inspector.box()
-            query_box.label(text="Inspector Query:", icon="VIEWZOOM")
+            query_box.label(text="Inspector Query (SQL):", icon="VIEWZOOM")
 
             # Query preset dropdown
             preset_row = query_box.row(align=True)
             preset_row.prop(s, "inspector_query_preset", text="Preset")
 
             # Query text input (single-line - Blender 4.5 has no MULTILINE support)
-            query_box.prop(s, "inspector_query_text", text="Query")
-            query_box.label(text="Note: queries must be written in one line.", icon="INFO")
+            query_box.prop(s, "inspector_query_text", text="SQL")
+            query_box.label(text="Try: PRAGMA table_list; or SELECT * FROM multipolygons LIMIT 5", icon="INFO")
 
             # ================================================================
             # BUTTON ROWS (Run/Clear, Export/Filter)
@@ -546,15 +577,14 @@ class M1DC_PT_Pipeline(Panel):
             filter_op.attr_name_code = getattr(s, "legend_filter_attr", "amenity_code")
             filter_op.text_value = getattr(s, "legend_filter_text", "")
 
-            # Show query result summary and table if active
-            if query_active:
-                summary = getattr(s, "inspector_query_last_summary", "")
-                if summary:
-                    query_box.label(text=f"Result: {summary}", icon="CHECKMARK")
+            # ALWAYS show last summary (errors, results, etc.)
+            summary = getattr(s, "inspector_query_last_summary", "")
+            if summary:
+                icon = "CHECKMARK" if query_active else "ERROR"
+                query_box.label(text=f"Result: {summary}", icon=icon)
 
-                # ════════════════════════════════════════════════════════════
-                # INSPECTOR QUERY RESULTS TABLE (P2-D enhancement)
-                # ════════════════════════════════════════════════════════════
+            # Show detailed stats table if query succeeded
+            if query_active:
                 stats_json = getattr(s, "inspector_query_last_stats_json", "")
                 if stats_json:
                     try:
@@ -597,7 +627,107 @@ class M1DC_PT_Pipeline(Panel):
                         pass  # Silently ignore JSON parse errors
 
             # ================================================================
-            # YELLOW BOX #2: DECODED FACE ATTRIBUTES
+            # SQL QUERY RESULTS TABLE (directly below SQL controls)
+            # ================================================================
+            inspector.separator()
+            qr_box = inspector.box()
+            qr_count = getattr(s, "inspector_sql_row_count", 0)
+            col_count = getattr(s, "inspector_sql_col_count", 0)
+            is_sql = getattr(s, "inspector_sql_mode", True)
+            mode_label = "SQL" if is_sql else "DSL"
+            qr_box.label(
+                text=f"Query Results — {mode_label} (rows: {qr_count}, cols: {col_count}):",
+                icon="OUTLINER_DATA_MESH",
+            )
+
+            if qr_count == 0:
+                qr_box.label(text="No query results. Run a SQL query.", icon="INFO")
+            else:
+                # Show last SQL query (truncated)
+                last_q = getattr(s, "inspector_sql_last_query", "")
+                if last_q and is_sql:
+                    trunc = last_q[:120] + ("..." if len(last_q) > 120 else "")
+                    qr_box.label(text=f"SQL: {trunc}")
+
+                # Dynamic headers from inspector_sql_headers
+                hdr_pg = getattr(s, "inspector_sql_headers", None)
+                if hdr_pg and col_count > 0:
+                    hdr_row = qr_box.row(align=True)
+                    for i in range(col_count):
+                        h = getattr(hdr_pg, f"h{i}", "")
+                        if h:
+                            hdr_row.label(text=str(h))
+
+                # Dynamic rows from inspector_rows (col0..col7)
+                MAX_SHOW = 20
+                display_rows = list(s.inspector_rows)[:MAX_SHOW]
+                for item in display_rows:
+                    r = qr_box.row(align=True)
+                    for i in range(col_count):
+                        v = getattr(item, f"col{i}", "")
+                        r.label(text=(v[:20] if v else "—"))
+
+                if qr_count > MAX_SHOW:
+                    qr_box.label(text=f"... +{qr_count - MAX_SHOW} more rows", icon="THREE_DOTS")
+
+            # ================================================================
+            # DSL FILTER (operates on Face Attributes, no DB)
+            # ================================================================
+            inspector.separator()
+            dsl_box = inspector.box()
+            dsl_box.label(text="DSL Filter (Face Attributes):", icon="FILTER")
+            dsl_box.prop(s, "dsl_text", text="DSL")
+            dsl_box.label(text="e.g. school | amenity=school | building IN (house,apartments)", icon="INFO")
+            dsl_btn_row = dsl_box.row(align=True)
+            dsl_btn_row.operator("m1dc.inspector_apply_dsl", text="Apply DSL", icon="PLAY")
+            dsl_btn_row.operator("m1dc.inspector_clear_query", text="Clear", icon="X")
+
+            # DSL results bar (always visible)
+            dsl_res_box = dsl_box.box()
+            dsl_matched = getattr(s, "dsl_faces_matched", 0)
+            dsl_uniq = getattr(s, "dsl_unique_buildings", 0)
+            if dsl_matched > 0:
+                dsl_res_box.label(text=f"Matched faces: {dsl_matched}  |  Buildings: {dsl_uniq}", icon="CHECKMARK")
+                tiles_preview = getattr(s, "dsl_tiles_preview", "")
+                if tiles_preview:
+                    dsl_res_box.label(text=f"Tiles: {tiles_preview[:80]}")
+                sample_preview = getattr(s, "dsl_sample_preview", "")
+                if sample_preview:
+                    dsl_res_box.label(text=f"Sample: {sample_preview[:100]}")
+            else:
+                dsl_res_box.label(text="No DSL results yet. Enter a query and press Apply DSL.", icon="INFO")
+
+            # ================================================================
+            # YELLOW BOX #4: LEGEND DECODE (code -> label lookup)
+            # ================================================================
+            inspector.separator()
+            ld_box = inspector.box()
+            ld_box.label(text="Legend Decode:", icon="VIEWZOOM")
+
+            ld_row1 = ld_box.row(align=True)
+            ld_row1.prop(s, "legend_decode_attr", text="Attr")
+
+            ld_row2 = ld_box.row(align=True)
+            ld_row2.prop(s, "legend_decode_code", text="Code")
+            ld_row2.operator("m1dc.inspector_legend_decode", text="Decode", icon="PLAY")
+
+            # Legend Decode results bar (always visible)
+            ld_res_box = ld_box.box()
+            decode_result = getattr(s, "legend_decode_result", "")
+            decode_status = getattr(s, "legend_decode_status", "")
+            if decode_status == "OK" and decode_result:
+                ld_res_box.label(text=f"{s.legend_decode_attr}  #{s.legend_decode_code}  =  {decode_result}", icon="CHECKMARK")
+            elif decode_status == "NOT_FOUND":
+                ld_res_box.label(text=f"{s.legend_decode_attr}  #{s.legend_decode_code}  =  (not found)", icon="ERROR")
+            elif decode_status == "CSV_MISSING":
+                ld_res_box.label(text="Legend CSV not loaded. Run Build Legends first.", icon="ERROR")
+            elif decode_status and decode_status.startswith("IMPORT_ERROR"):
+                ld_res_box.label(text=f"Import error: {decode_status}", icon="ERROR")
+            else:
+                ld_res_box.label(text="Enter a code and press Decode.", icon="INFO")
+
+            # ================================================================
+            # DECODED FACE ATTRIBUTES (active face inspection)
             # ================================================================
             inspector.separator()
             decoded_box = inspector.box()
@@ -628,15 +758,8 @@ class M1DC_PT_Pipeline(Panel):
                         row.label(text=attr_data["attr"])
                         row.label(text=str(attr_data["code"]))
                         decoded_val = attr_data["decoded"]
-                        # Show decoded value with tooltip
                         sub = row.row()
                         sub.label(text=decoded_val)
-
-            # Filter controls for legend text (compact, always visible)
-            inspector.separator()
-            filter_row = inspector.row(align=True)
-            filter_row.prop(s, "legend_filter_attr", text="")
-            filter_row.prop(s, "legend_filter_text", text="")
 
 
 # ============================================================================

@@ -753,6 +753,150 @@ class M1DC_OT_TerrainAlignXYMinCorner(Operator):
         return {"FINISHED"}
 
 
+class M1DC_OT_TerrainSnapXYToTiles(Operator):
+    """
+    Snap terrain XY so its min corner matches the CityGML tile-grid min corner.
+
+    Pure translation — no scaling. Uses vertex-based world bounding box for
+    both terrain and CityGML tile-grid extent. This is the deterministic
+    "last mile" placement after fitting/scaling.
+    """
+    bl_idname = "m1dc.terrain_snap_xy_to_tiles"
+    bl_label = "Snap Terrain XY to City Tiles"
+    bl_description = "Translate terrain so its XY min corner matches the CityGML tile-grid min corner (no scaling)"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        from ...pipeline.terrain.terrain_validation import get_terrain_object, collect_gml_objects
+        from ...pipeline.terrain.terrain_fit import (
+            world_bbox_from_vertices, citygml_grid_extent, _object_world_span,
+        )
+
+        terrain = get_terrain_object()
+        if not terrain:
+            self.report({"ERROR"}, "Terrain not found")
+            return {"CANCELLED"}
+
+        gml_objs = collect_gml_objects()
+        if not gml_objs:
+            self.report({"ERROR"}, "No CityGML tiles found in CITYGML_TILES")
+            return {"CANCELLED"}
+
+        # City tile-grid min (from tile locations + tile_size)
+        (city_min_x, city_min_y), (city_max_x, city_max_y) = citygml_grid_extent(gml_objs)
+
+        # Terrain min (vertex-based world bbox)
+        t_span, t_center, t_mn, t_mx = _object_world_span(terrain)
+
+        dx = city_min_x - t_mn.x
+        dy = city_min_y - t_mn.y
+
+        log_info(f"[TERRAIN][SNAP_XY] city_min=({city_min_x:.2f}, {city_min_y:.2f})")
+        log_info(f"[TERRAIN][SNAP_XY] terrain_min=({t_mn.x:.2f}, {t_mn.y:.2f})")
+        log_info(f"[TERRAIN][SNAP_XY] delta=({dx:.2f}, {dy:.2f})")
+
+        if abs(dx) < 0.01 and abs(dy) < 0.01:
+            self.report({"INFO"}, f"Already snapped (dx={dx:.3f}, dy={dy:.3f}) ✓")
+            return {"FINISHED"}
+
+        terrain.location.x += dx
+        terrain.location.y += dy
+
+        # Also snap RGB if present
+        terrain_col = bpy.data.collections.get("TERRAIN")
+        if terrain_col:
+            for obj in terrain_col.objects:
+                if obj.type == "MESH" and obj != terrain and "rgb" in obj.name.lower():
+                    obj.location.x += dx
+                    obj.location.y += dy
+                    log_info(f"[TERRAIN][SNAP_XY] Also snapped RGB: {obj.name}")
+
+        bpy.context.view_layer.update()
+
+        # Verify
+        _, _, t_mn2, _ = _object_world_span(terrain)
+        err_x = abs(t_mn2.x - city_min_x)
+        err_y = abs(t_mn2.y - city_min_y)
+        log_info(f"[TERRAIN][SNAP_XY] post_err=({err_x:.4f}, {err_y:.4f})")
+
+        self.report({"INFO"}, f"Snapped terrain XY: dx={dx:.1f}m, dy={dy:.1f}m ✓")
+        return {"FINISHED"}
+
+
+class M1DC_OT_TerrainSetZScale(Operator):
+    """
+    Set terrain Z scale for visual height exaggeration.
+
+    This is a visualization step only — it does NOT claim metric DEM correctness.
+    Sets terrain.scale.z to the scene property terrain_z_exaggeration (default 20.0).
+    X and Y scale are NOT modified.
+    """
+    bl_idname = "m1dc.terrain_set_z_scale"
+    bl_label = "Set Terrain Z Scale"
+    bl_description = "Set terrain Z exaggeration for visual height (visualization only, not metric)"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        from ...pipeline.terrain.terrain_validation import get_terrain_object
+
+        terrain = get_terrain_object()
+        if not terrain:
+            self.report({"ERROR"}, "Terrain not found")
+            return {"CANCELLED"}
+
+        s = _settings(context)
+        z_scale = getattr(s, "terrain_z_exaggeration", 20.0) if s else 20.0
+
+        old_z = terrain.scale.z
+        terrain.scale.z = z_scale
+
+        log_info(f"[TERRAIN][Z_SCALE] {terrain.name}: scale.z {old_z:.4f} → {z_scale:.4f} "
+                 f"(scale.x={terrain.scale.x:.4f}, scale.y={terrain.scale.y:.4f} unchanged)")
+        log_info(f"[TERRAIN][Z_SCALE] ⚠ Visualization only — not metric DEM Z")
+
+        bpy.context.view_layer.update()
+        self.report({"INFO"}, f"Terrain Z scale: {z_scale:.1f}× (visualization)")
+        return {"FINISHED"}
+
+
+class M1DC_OT_TerrainSnapToCityCenter(Operator):
+    """
+    Snap terrain XY so its bbox center matches the CityGML tile-grid center.
+
+    Pure translation — no scaling, no rotation, Z unchanged.
+    """
+    bl_idname = "m1dc.terrain_snap_to_city_center"
+    bl_label = "Snap Terrain to City Center (XY)"
+    bl_description = "Translate terrain so its XY center matches the CityGML tile-grid center (no scaling, Z unchanged)"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        from ...pipeline.terrain.terrain_snap_to_city_center import snap_terrain_to_city_center_xy
+
+        result = snap_terrain_to_city_center_xy()
+
+        if not result.get("ok"):
+            self.report({"ERROR"}, result.get("error", "Unknown error"))
+            return {"CANCELLED"}
+
+        dx, dy = result["delta"]
+        cx, cy = result["city_center"]
+        tx, ty = result["terrain_center"]
+        name = result["terrain"]
+
+        log_info(f"[Terrain][Snap] city_center=({cx}, {cy}) ter_center=({tx}, {ty}) delta=({dx}, {dy})")
+
+        # Force viewport update
+        try:
+            for area in context.screen.areas:
+                area.tag_redraw()
+        except Exception:
+            pass
+
+        self.report({"INFO"}, f"Snapped {name} to city center: dx={dx:.1f}m, dy={dy:.1f}m")
+        return {"FINISHED"}
+
+
 # Operator registration
 CLASSES = [
     M1DC_OT_ImportBasemapTerrain,
@@ -764,6 +908,9 @@ CLASSES = [
     M1DC_OT_TerrainAlignToCity,
     M1DC_OT_TerrainBakeScale,
     M1DC_OT_TerrainAlignXYMinCorner,
+    M1DC_OT_TerrainSnapXYToTiles,
+    M1DC_OT_TerrainSetZScale,
+    M1DC_OT_TerrainSnapToCityCenter,
 ]
 
 

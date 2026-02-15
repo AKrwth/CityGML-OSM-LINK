@@ -944,6 +944,745 @@ def _inspect_active_face_impl(s, mesh, poly_idx):
     return result
 
 
+# ---------------------------------------------------------------------------
+# Inspector Query Implementation (Fix 3)
+# ---------------------------------------------------------------------------
+
+def _parse_inspector_query(query_text):
+    """Parse inspector query text into (attr_name, operator, value).
+
+    Supported forms:
+    - "amenity=university"   → ("osm_amenity_code", "==", <code>)
+    - "amenity"              → ("osm_amenity_code", ">", 0)
+    - "building_code>0"      → ("osm_building_code", ">", 0)
+    - "osm_building_code=5"  → ("osm_building_code", "==", 5)
+
+    Returns list of (attr_name, op, value) tuples.
+    """
+    if not query_text or not query_text.strip():
+        return []
+
+    parts = [p.strip() for p in query_text.split(",")]
+    filters = []
+
+    for part in parts:
+        if not part:
+            continue
+
+        # Try "attr=value" or "attr>value"
+        for op_char in ("=", ">", "<"):
+            if op_char in part:
+                key, _, val_str = part.partition(op_char)
+                key = key.strip()
+                val_str = val_str.strip()
+                break
+        else:
+            # Bare key like "amenity" → means any nonzero code
+            key = part.strip()
+            op_char = ">"
+            val_str = "0"
+
+        # Normalize key to code attr name
+        code_attr = _normalize_to_code_attr(key)
+
+        # Resolve value: either integer code or text→code via legend
+        try:
+            int_val = int(val_str)
+        except (ValueError, TypeError):
+            # Text value → encode via legend
+            feature_key = code_attr.replace("osm_", "").replace("_code", "")
+            cache_key = f"{feature_key}_code"
+            try:
+                from .pipeline.diagnostics.legend_encoding import legend_encode
+                int_val = legend_encode(cache_key, val_str)
+                if int_val == 0:
+                    # Try case-insensitive
+                    from .pipeline.diagnostics.legend_encoding import _ENCODE_CACHE
+                    cache = _ENCODE_CACHE.get(cache_key, {})
+                    for k, v in cache.items():
+                        if k.lower() == val_str.lower():
+                            int_val = v
+                            break
+            except Exception:
+                int_val = 0
+
+        op_str = "==" if op_char == "=" else op_char
+        filters.append((code_attr, op_str, int_val))
+
+    return filters
+
+
+def _normalize_to_code_attr(key):
+    """Normalize a key to the full osm_*_code attribute name.
+
+    Examples:
+    - "amenity"           → "osm_amenity_code"
+    - "building"          → "osm_building_code"
+    - "building_code"     → "osm_building_code"
+    - "osm_building_code" → "osm_building_code"
+    """
+    k = key.strip()
+    if k.startswith("osm_") and k.endswith("_code"):
+        return k
+    if k.endswith("_code"):
+        return f"osm_{k}"
+    if k.startswith("osm_"):
+        return f"{k}_code"
+    return f"osm_{k}_code"
+
+
+def _safe_read_face_int(mesh, attr_name, face_idx):
+    """Read an INT face attribute value safely, handling Blender 4.5 empty-data edge case.
+
+    In Blender 4.5, me.attributes[attr].data can have size 0 in Edit Mode
+    or when reading non-evaluated mesh. Falls back to evaluated depsgraph mesh.
+
+    Returns int value or 0 on failure.
+    """
+    attr = mesh.attributes.get(attr_name)
+    if attr is None or attr.domain != "FACE":
+        return 0
+
+    # Fast path: data array is populated and index is valid
+    if len(attr.data) > 0 and face_idx < len(attr.data):
+        try:
+            return int(attr.data[face_idx].value)
+        except (IndexError, RuntimeError):
+            pass
+
+    # Slow path: try evaluated mesh via depsgraph
+    try:
+        import bpy
+        depsgraph = bpy.context.evaluated_depsgraph_get()
+        # Find the object that owns this mesh
+        for obj in bpy.data.objects:
+            if obj.type == "MESH" and obj.data == mesh:
+                eval_obj = obj.evaluated_get(depsgraph)
+                eval_mesh = eval_obj.data
+                eval_attr = eval_mesh.attributes.get(attr_name)
+                if eval_attr and len(eval_attr.data) > face_idx:
+                    return int(eval_attr.data[face_idx].value)
+                break
+    except Exception:
+        pass
+
+    return 0
+
+
+def _apply_inspector_query_impl(s):
+    """Apply inspector query: SQL mode (real sqlite3) or reject non-SQL.
+
+    SQL PREFIXES route to _run_inspector_sql_query().
+    Non-SQL text gets rejected with a helpful message — use DSL field instead.
+
+    Returns number of matched rows.
+    """
+    import bpy
+
+    query_text = getattr(s, "inspector_query_text", "").strip()
+    if not query_text:
+        s.inspector_query_active = False
+        s.inspector_query_last_summary = "Empty query"
+        return 0
+
+    # ── SQL detection ────────────────────────────────────────────────
+    SQL_PREFIXES = ("SELECT", "WITH", "PRAGMA", "EXPLAIN")
+    upper = query_text.upper().lstrip()
+    is_sql = any(upper.startswith(p) for p in SQL_PREFIXES)
+
+    if is_sql:
+        s.inspector_sql_mode = True
+        return _run_inspector_sql_query(s, query_text)
+    else:
+        # Non-SQL: do NOT run through DSL parser here. Reject cleanly.
+        s.inspector_query_active = False
+        s.inspector_sql_mode = False
+        s.inspector_query_last_summary = (
+            "Not recognized as SQL. Use the DSL Filter box below for DSL expressions."
+        )
+        log_warn(f"[Inspector][Query] Non-SQL rejected: {query_text[:80]}")
+        return 0
+
+
+# ── SQL Helpers ────────────────────────────────────────────────────────
+
+def _clear_inspector_rows(s):
+    """Clear the inspector row buffer."""
+    s.inspector_rows.clear()
+    s.inspector_row_count = 0
+
+
+def _inspector_clear_sql_buffer(s):
+    """Clear the SQL-specific result buffer (headers, rows, counts)."""
+    s.inspector_sql_last_query = ""
+    s.inspector_sql_row_count = 0
+    s.inspector_sql_col_count = 0
+    hdr = getattr(s, "inspector_sql_headers", None)
+    if hdr:
+        for i in range(8):
+            setattr(hdr, f"h{i}", "")
+    _clear_inspector_rows(s)
+
+
+def _inspector_clear_dsl_stats(s):
+    """Clear DSL stats fields."""
+    s.dsl_faces_matched = 0
+    s.dsl_unique_buildings = 0
+    s.dsl_last = ""
+    s.dsl_tiles_preview = ""
+    s.dsl_sample_preview = ""
+
+
+def _tag_redraw_all_view3d():
+    """Force redraw of all 3D viewports."""
+    import bpy
+    try:
+        for win in bpy.context.window_manager.windows:
+            for area in win.screen.areas:
+                if area.type == 'VIEW_3D':
+                    area.tag_redraw()
+    except Exception:
+        pass
+
+
+def _safe_read_face_value(mesh, attr_name, face_idx):
+    """Read a face attribute as string (works for STRING, INT, FLOAT, BOOL).
+
+    Returns "" on failure or missing attribute.
+    """
+    attr = mesh.attributes.get(attr_name)
+    if attr is None or attr.domain != "FACE":
+        return ""
+    if len(attr.data) <= face_idx:
+        return ""
+    try:
+        v = attr.data[face_idx].value
+        if v is None:
+            return ""
+        return str(v)
+    except (IndexError, RuntimeError):
+        return ""
+
+
+def _resolve_inspector_db_path(s):
+    """Resolve the best database path for Inspector SQL queries.
+
+    Priority:
+      1. mkdb_path (semantic snapshot — has features table with building/amenity)
+      2. links_db_path (linkdb — has osm_building_link)
+      3. gpkg_path (raw GeoPackage)
+
+    Returns (db_path, db_label) or ("", "") if nothing found.
+    """
+    # 1) MKDB — best for SELECT building, amenity, ...
+    mkdb = getattr(s, "mkdb_path", "").strip()
+    if mkdb and os.path.isfile(mkdb):
+        return mkdb, "MKDB"
+
+    # Auto-detect mkdb from output_dir
+    out = getattr(s, "output_dir", "").strip()
+    if out:
+        mkdb_dir = os.path.join(out, "mkdb")
+        if os.path.isdir(mkdb_dir):
+            latest = os.path.join(mkdb_dir, "latest_mkdb.sqlite")
+            if os.path.isfile(latest):
+                return latest, "MKDB(latest)"
+            # fallback: largest sqlite in mkdb/
+            candidates = sorted(
+                [os.path.join(mkdb_dir, f) for f in os.listdir(mkdb_dir) if f.endswith(".sqlite")],
+                key=lambda p: os.path.getsize(p), reverse=True,
+            )
+            if candidates:
+                return candidates[0], "MKDB(auto)"
+
+    # 2) LinkDB
+    link = getattr(s, "links_db_path", "").strip()
+    if link and os.path.isfile(link):
+        return link, "LinkDB"
+
+    # 3) GPKG
+    gpkg = getattr(s, "gpkg_path", "").strip()
+    if gpkg and os.path.isfile(gpkg):
+        return gpkg, "GPKG"
+
+    return "", ""
+
+
+def _run_inspector_sql_query(s, query_sql: str):
+    """Execute raw SQL against the Inspector DB and populate GENERIC row buffer.
+
+    Column names are stored in inspector_sql_headers (h0..h7).
+    Row values are stored in inspector_rows (col0..col7) as stringified values.
+    Any SQL result shape is supported (up to 8 columns).
+
+    Uses read-only connection. Enforces LIMIT 200 safety.
+    Returns number of rows buffered.
+    """
+    import bpy
+    import json
+    import time
+
+    _inspector_clear_sql_buffer(s)
+
+    db_path, db_label = _resolve_inspector_db_path(s)
+    if not db_path:
+        s.inspector_query_active = False
+        # Show which paths were checked
+        tried = []
+        for attr in ("mkdb_path", "links_db_path", "gpkg_path"):
+            v = getattr(s, attr, "").strip()
+            if v:
+                tried.append(f"{attr}={v}")
+        out = getattr(s, "output_dir", "").strip()
+        if out:
+            tried.append(f"output_dir={out}")
+        hint = "; ".join(tried) if tried else "all paths empty"
+        s.inspector_query_last_summary = f"No database found. Checked: {hint}"
+        log_warn(f"[Inspector][SQL] No database found. Tried: {hint}")
+        return 0
+
+    log_info(f"[Inspector][SQL] target={db_label} db={db_path}")
+
+    # Safety: enforce LIMIT
+    sql = query_sql.rstrip().rstrip(";")
+    if "LIMIT" not in sql.upper():
+        sql = f"{sql} LIMIT 200"
+
+    conn = None
+    try:
+        from pathlib import Path as _P
+        uri = f"file:{_P(db_path).as_posix()}?mode=ro"
+        conn = sqlite3.connect(uri, uri=True)
+        conn.execute("PRAGMA query_only = ON;")
+        conn.execute("PRAGMA busy_timeout = 5000;")
+
+        t0 = time.time()
+        cur = conn.execute(sql)
+        cols = [d[0] for d in cur.description] if cur.description else []
+        rows = cur.fetchmany(200)
+        elapsed = (time.time() - t0) * 1000.0
+
+        # Store headers (up to 8 columns)
+        hdr = s.inspector_sql_headers
+        for i in range(8):
+            name = cols[i] if i < len(cols) else ""
+            setattr(hdr, f"h{i}", str(name))
+
+        s.inspector_sql_col_count = min(len(cols), 8)
+        s.inspector_sql_row_count = len(rows)
+        s.inspector_sql_last_query = query_sql[:512]
+
+        # Store rows (stringify all values into col0..col7)
+        for r in rows:
+            item = s.inspector_rows.add()
+            for i in range(min(len(r), 8)):
+                v = r[i]
+                setattr(item, f"col{i}", "" if v is None else str(v))
+
+        s.inspector_row_count = len(s.inspector_rows)
+        s.inspector_query_active = True
+        s.inspector_sql_mode = True
+
+        summary = f"{len(rows)} rows, {len(cols)} cols from {db_label} ({elapsed:.0f}ms)"
+        s.inspector_query_last_summary = summary
+
+        # Stats JSON for compatibility with summary box
+        stats = {
+            "query_column": "SQL",
+            "query_code": 0,
+            "faces_count": len(rows),
+            "unique_osm_ids": 0,
+            "osm_id_list": [],
+            "db_target": db_label,
+            "elapsed_ms": round(elapsed, 1),
+            "columns": cols[:8],
+        }
+        s.inspector_query_last_stats_json = json.dumps(stats)
+
+        log_info(f"[Inspector][SQL] Result: {summary}")
+        _tag_redraw_all_view3d()
+        return len(rows)
+
+    except sqlite3.Error as ex:
+        s.inspector_query_active = False
+        s.inspector_query_last_summary = f"SQL Error: {ex}"
+        log_error(f"[Inspector][SQL] {ex}")
+        return 0
+    except Exception as ex:
+        s.inspector_query_active = False
+        s.inspector_query_last_summary = f"Error: {ex}"
+        log_error(f"[Inspector][SQL] {ex}")
+        return 0
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+# ── DSL Filter (operates on Mesh Face Attributes, no DB) ─────────────
+
+def _dsl_parse(dsl_text):
+    """Parse DSL into (mode, payload).
+
+    Returns one of:
+      ("EMPTY", None)
+      ("SHORTCUT", "school")                    — building=school OR amenity=school
+      ("EQ", ("building", "school"))            — exact match
+      ("IN", ("building", ["school","house"]))  — set membership
+      ("GT", ("osm_amenity_code", "5"))         — numeric >
+      ("LT", ("osm_amenity_code", "5"))         — numeric <
+      ("UNSUPPORTED", raw_text)
+    """
+    import re
+    q = (dsl_text or "").strip()
+    if not q:
+        return ("EMPTY", None)
+
+    # Shortcut: single token (no operators) → building=tok OR amenity=tok
+    if all(ch.isalnum() or ch in "_-" for ch in q) and "=" not in q:
+        upper = q.upper()
+        if "IN" != upper:  # avoid matching bare "IN"
+            return ("SHORTCUT", q)
+
+    # key IN (a, b, c)
+    in_match = re.match(r'^(\w+)\s+IN\s*\(([^)]+)\)', q, re.IGNORECASE)
+    if in_match:
+        key = in_match.group(1).strip()
+        inner = in_match.group(2).strip()
+        vals = [v.strip().strip("'\"") for v in inner.split(",") if v.strip()]
+        return ("IN", (key, vals))
+
+    # key > N
+    if ">" in q and "=" not in q:
+        key, _, val = q.partition(">")
+        return ("GT", (key.strip(), val.strip().strip("'\"")))
+
+    # key < N
+    if "<" in q and "=" not in q:
+        key, _, val = q.partition("<")
+        return ("LT", (key.strip(), val.strip().strip("'\"")))
+
+    # key = value
+    if "=" in q:
+        key, _, val = q.partition("=")
+        return ("EQ", (key.strip(), val.strip().strip("'\"")))
+
+    return ("UNSUPPORTED", q)
+
+
+def _dsl_match_face(mesh, face_idx, mode, payload):
+    """Test whether face matches the parsed DSL expression.
+
+    Tries STRING face attributes first, then falls back to INT code + legend encode.
+    """
+    if mode == "SHORTCUT":
+        token = payload
+        for attr_name in ("building", "amenity", "landuse", "type"):
+            # String attribute first
+            sv = _safe_read_face_value(mesh, attr_name, face_idx)
+            if sv and sv.lower() == token.lower():
+                return True
+            # Code attribute fallback
+            code_attr = _normalize_to_code_attr(attr_name)
+            code_val = _safe_read_face_int(mesh, code_attr, face_idx)
+            if code_val > 0:
+                encoded = _legend_encode_safe(code_attr, token)
+                if encoded > 0 and code_val == encoded:
+                    return True
+        return False
+
+    if mode == "EQ":
+        key, val = payload
+        # Try raw string attribute first
+        sv = _safe_read_face_value(mesh, key, face_idx)
+        if sv:
+            if sv == val or sv.lower() == val.lower():
+                return True
+            # If both are numeric, compare as int
+            try:
+                if int(sv) == int(val):
+                    return True
+            except (ValueError, TypeError):
+                pass
+        # Try code attribute fallback
+        code_attr = _normalize_to_code_attr(key)
+        code_val = _safe_read_face_int(mesh, code_attr, face_idx)
+        try:
+            int_val = int(val)
+        except (ValueError, TypeError):
+            int_val = _legend_encode_safe(code_attr, val)
+        if int_val != 0 and code_val == int_val:
+            return True
+        return False
+
+    if mode == "IN":
+        key, vals = payload
+        vals_lower = {v.lower() for v in vals}
+        # String attribute
+        sv = _safe_read_face_value(mesh, key, face_idx)
+        if sv and sv.lower() in vals_lower:
+            return True
+        # Code fallback
+        code_attr = _normalize_to_code_attr(key)
+        code_val = _safe_read_face_int(mesh, code_attr, face_idx)
+        if code_val > 0:
+            int_vals = set()
+            for v in vals:
+                try:
+                    int_vals.add(int(v))
+                except (ValueError, TypeError):
+                    int_vals.add(_legend_encode_safe(code_attr, v))
+            if code_val in int_vals:
+                return True
+        return False
+
+    if mode == "GT":
+        key, val = payload
+        # Numeric comparison only
+        sv = _safe_read_face_value(mesh, key, face_idx)
+        code_attr = _normalize_to_code_attr(key)
+        v_int = _safe_read_face_int(mesh, code_attr, face_idx)
+        # Also try direct numeric attribute
+        if sv:
+            try:
+                v_int = max(v_int, int(sv))
+            except (ValueError, TypeError):
+                pass
+        try:
+            return v_int > int(val)
+        except (ValueError, TypeError):
+            return False
+
+    if mode == "LT":
+        key, val = payload
+        sv = _safe_read_face_value(mesh, key, face_idx)
+        code_attr = _normalize_to_code_attr(key)
+        v_int = _safe_read_face_int(mesh, code_attr, face_idx)
+        if sv:
+            try:
+                v_int = max(v_int, int(sv))
+            except (ValueError, TypeError):
+                pass
+        try:
+            return v_int < int(val)
+        except (ValueError, TypeError):
+            return False
+
+    return False
+
+
+def _apply_dsl_filter_impl(s):
+    """Apply DSL filter on materialized face attributes (STRING + INT).
+
+    Supports:
+      key = value            (exact match, string or code)
+      key IN (a, b, c)       (set membership)
+      key > N  /  key < N    (numeric comparison)
+      SHORTCUT token         (building=token OR amenity=token)
+
+    Populates generic row buffer (col0=tile, col1=face, col2=osm_id, col3=value).
+    Sets dsl_faces_matched, dsl_unique_buildings, dsl_tiles_preview, dsl_sample_preview.
+
+    Returns number of matched faces.
+    """
+    import bpy
+
+    dsl_text = getattr(s, "dsl_text", "").strip()
+
+    # Clear previous results
+    _inspector_clear_sql_buffer(s)
+    _inspector_clear_dsl_stats(s)
+
+    if not dsl_text:
+        log_info("[Inspector][DSL] Empty filter")
+        return 0
+
+    s.dsl_last = dsl_text
+
+    mode, payload = _dsl_parse(dsl_text)
+    if mode in ("EMPTY", "UNSUPPORTED"):
+        log_warn(f"[Inspector][DSL] Unsupported: {dsl_text}")
+        return 0
+
+    log_info(f"[Inspector][DSL] Parsed: mode={mode} payload={payload}")
+
+    col = bpy.data.collections.get("CITYGML_TILES")
+    if not col:
+        log_warn("[Inspector][DSL] No CITYGML_TILES collection")
+        return 0
+
+    mesh_objs = [o for o in col.objects if o.type == "MESH" and o.data]
+    if not mesh_objs:
+        log_warn("[Inspector][DSL] No mesh objects in CITYGML_TILES")
+        return 0
+
+    # Set headers: tile | face | osm_id | matched_key | value
+    hdr = s.inspector_sql_headers
+    hdr.h0 = "Tile"
+    hdr.h1 = "Face"
+    hdr.h2 = "osm_id"
+    if mode == "SHORTCUT":
+        hdr.h3 = "building"
+        hdr.h4 = "amenity"
+    elif mode in ("EQ", "IN", "GT", "LT"):
+        key = payload[0] if isinstance(payload, tuple) else ""
+        hdr.h3 = key
+        hdr.h4 = ""
+    s.inspector_sql_col_count = 5 if mode == "SHORTCUT" else 4
+
+    total_matched = 0
+    row_limit = 200
+    row_count = 0
+    tiles_count = {}
+    uniq_buildings = set()
+    samples = []
+
+    for obj in mesh_objs:
+        mesh = obj.data
+        fc = len(mesh.polygons)
+        if fc == 0:
+            continue
+
+        tile_name = obj.name
+
+        for face_idx in range(fc):
+            if not _dsl_match_face(mesh, face_idx, mode, payload):
+                continue
+
+            total_matched += 1
+            tiles_count[tile_name] = tiles_count.get(tile_name, 0) + 1
+
+            # Unique buildings by (tile, building_idx) or osm_id
+            bidx = _safe_read_face_value(mesh, "building_idx", face_idx)
+            osm_id = _safe_read_face_value(mesh, "osm_id_int", face_idx)
+            if bidx:
+                uniq_buildings.add((tile_name, bidx))
+            elif osm_id:
+                uniq_buildings.add(osm_id)
+
+            if row_count < row_limit:
+                item = s.inspector_rows.add()
+                item.col0 = tile_name[:24]
+                item.col1 = str(face_idx)
+                item.col2 = osm_id or ""
+
+                if mode == "SHORTCUT":
+                    item.col3 = _safe_read_face_value(mesh, "building", face_idx)
+                    item.col4 = _safe_read_face_value(mesh, "amenity", face_idx)
+                elif mode in ("EQ", "IN", "GT", "LT"):
+                    key = payload[0] if isinstance(payload, tuple) else ""
+                    item.col3 = _safe_read_face_value(mesh, key, face_idx)
+                row_count += 1
+
+            # Sample rows (first 5)
+            if len(samples) < 5:
+                sv = _safe_read_face_value(mesh, payload[0] if isinstance(payload, tuple) else "building", face_idx)
+                samples.append(f"{tile_name}|f={face_idx}|osm={osm_id}|{sv}")
+
+    s.inspector_row_count = row_count
+    s.inspector_sql_row_count = row_count
+    s.inspector_sql_mode = False
+    s.inspector_query_active = True
+
+    # DSL stats
+    s.dsl_faces_matched = total_matched
+    s.dsl_unique_buildings = len(uniq_buildings)
+
+    top_tiles = sorted(tiles_count.items(), key=lambda kv: kv[1], reverse=True)[:10]
+    s.dsl_tiles_preview = ", ".join(f"{t}:{c}" for t, c in top_tiles)
+    s.dsl_sample_preview = " || ".join(samples)
+
+    summary = f"DSL: {total_matched} faces, {len(uniq_buildings)} buildings ({row_count} buffered)"
+    s.inspector_query_last_summary = summary
+
+    log_info(f"[Inspector][DSL] {summary}")
+    _tag_redraw_all_view3d()
+    return total_matched
+
+
+def _legend_encode_safe(code_attr, text_val):
+    """Attempt legend_encode, returning 0 on failure."""
+    feature_key = code_attr.replace("osm_", "").replace("_code", "")
+    cache_key = f"{feature_key}_code"
+    try:
+        from .pipeline.diagnostics.legend_encoding import legend_encode, _ENCODE_CACHE
+        result = legend_encode(cache_key, text_val)
+        if result == 0:
+            # case-insensitive fallback
+            cache = _ENCODE_CACHE.get(cache_key, {})
+            for k, v in cache.items():
+                if k.lower() == text_val.lower():
+                    return v
+        return result
+    except Exception:
+        return 0
+
+
+def _clear_inspector_query_impl(s):
+    """Clear inspector query state and reset all UI fields."""
+    s.inspector_query_active = False
+    s.inspector_query_last_summary = ""
+    s.inspector_query_last_stats_json = ""
+    _inspector_clear_sql_buffer(s)
+    _inspector_clear_dsl_stats(s)
+    # Reset legend decode output
+    s.legend_decode_result = ""
+    s.legend_decode_status = ""
+    log_info("[Inspector][Query] Cleared")
+    _tag_redraw_all_view3d()
+    return 0
+
+
+def _zoom_to_inspector_selection_impl(context, s):
+    """Zoom viewport to faces matching the current query."""
+    import bpy
+    # If no query active, just zoom to selected
+    if not getattr(s, "inspector_query_active", False):
+        bpy.ops.view3d.view_selected()
+        return
+
+    # The query results are in stats_json — just zoom to selected for now
+    try:
+        bpy.ops.view3d.view_selected()
+    except Exception:
+        pass
+
+
+def _export_inspector_report_impl(s):
+    """Export inspector query results to CSV."""
+    import json
+    output_dir = getattr(s, "output_dir", "").strip()
+    if not output_dir:
+        raise RuntimeError("output_dir not set")
+
+    stats_json = getattr(s, "inspector_query_last_stats_json", "")
+    if not stats_json:
+        raise RuntimeError("No query results to export")
+
+    stats = json.loads(stats_json)
+    report_path = os.path.join(output_dir, "inspector_query_report.csv")
+
+    import csv
+    with open(report_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["query_column", "query_code", "faces_count", "unique_osm_ids"])
+        writer.writerow([
+            stats.get("query_column", ""),
+            stats.get("query_code", ""),
+            stats.get("faces_count", 0),
+            stats.get("unique_osm_ids", 0),
+        ])
+        writer.writerow([])
+        writer.writerow(["osm_id"])
+        for oid in stats.get("osm_id_list", []):
+            writer.writerow([oid])
+
+    log_info(f"[Inspector][Export] Report written: {report_path}")
+    return report_path
+
+
 def _read_face_int_attr(mesh, attr_name, poly_index, default=None):
     if mesh is None or attr_name is None or poly_index is None:
         return default

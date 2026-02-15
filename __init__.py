@@ -1,7 +1,7 @@
 bl_info = {
     "name": "M1_DC_V6",
     "author": "Alixnova Akhai (akhai-labs)",
-    "version": (6, 11, 11),
+    "version": (6, 11, 14),
     "blender": (4, 5, 3),
     "location": "View3D > Sidebar > M1_DC_V6",
     "description": "Minimal pipeline UI for CityGML + GPKG + BaseMap (GeoTIFF tiles) with clean status + run operator.",
@@ -18,7 +18,7 @@ try:
 except ModuleNotFoundError as exc:
     raise ImportError("bpy not found; run this add-on inside Blender.") from exc
 
-from .settings import M1DCSettings, M1DCBuildingRow, M1DCColumnOption, M1DCDecodedAttrRow
+from .settings import M1DCSettings, M1DCBuildingRow, M1DCColumnOption, M1DCDecodedAttrRow, M1DC_InspectorRow, M1DC_InspectorHeader
 # Explicitly load terrain_merge BEFORE operators to ensure imports work
 from .pipeline.terrain import terrain_merge  # noqa: F401
 
@@ -34,6 +34,9 @@ from .pipeline.operations import (
     M1DC_OT_TerrainBakeScale,
     M1DC_OT_TerrainAlignXYMinCorner,
     M1DC_OT_TerrainFitBBox,
+    M1DC_OT_TerrainSnapXYToTiles,
+    M1DC_OT_TerrainSetZScale,
+    M1DC_OT_TerrainSnapToCityCenter,
     M1DC_OT_Validate,
     M1DC_OT_RunAll,
     M1DC_OT_RunPipeline,
@@ -83,6 +86,8 @@ from .pipeline.operations import (
     M1DC_OT_InspectorClearQuery,
     M1DC_OT_InspectorZoomToSelection,
     M1DC_OT_InspectorExportReport,
+    M1DC_OT_InspectorLegendDecode,
+    M1DC_OT_InspectorApplyDSL,
     M1DC_OT_FilterByLegendText,
 )
 
@@ -105,6 +110,8 @@ CLASSES = (
     M1DCBuildingRow,
     M1DCColumnOption,
     M1DCDecodedAttrRow,
+    M1DC_InspectorRow,
+    M1DC_InspectorHeader,
     M1DCSettings,
     M1DC_OT_ImportBasemapTerrain,
     M1DC_OT_ImportRGBBasemap,
@@ -161,12 +168,17 @@ CLASSES = (
     M1DC_OT_TerrainBakeScale,
     M1DC_OT_TerrainAlignXYMinCorner,
     M1DC_OT_TerrainFitBBox,
+    M1DC_OT_TerrainSnapXYToTiles,
+    M1DC_OT_TerrainSetZScale,
+    M1DC_OT_TerrainSnapToCityCenter,
     M1DC_OT_BuildLegends,
     M1DC_OT_InspectActiveFace,
     M1DC_OT_InspectorApplyQuery,
     M1DC_OT_InspectorClearQuery,
     M1DC_OT_InspectorZoomToSelection,
     M1DC_OT_InspectorExportReport,
+    M1DC_OT_InspectorLegendDecode,
+    M1DC_OT_InspectorApplyDSL,
     M1DC_OT_FilterByLegendText,
     M1DC_OT_SelectTable,
     M1DC_OT_SelectOSMFeatureTable,
