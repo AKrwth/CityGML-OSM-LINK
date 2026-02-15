@@ -52,27 +52,34 @@ SCENE_KEY_MAX_N = "M1DC_WORLD_MAX_N"
 
 def _bbox_size_xy_world(obj):
     """
-    Compute bounding box size in world space (XY only).
+    Compute bounding box size in world space (XY only) using vertex data.
+    
+    Uses obj.data.vertices + matrix_world for accuracy (NOT obj.bound_box
+    which can be stale/cached in Blender after scale changes).
     
     Args:
-        obj: Blender object with bound_box
+        obj: Blender mesh object
     
     Returns:
         (width_x, height_y) in Blender world units (1 unit = 1 meter in local space)
     """
-    if not obj or not hasattr(obj, 'bound_box'):
+    if not obj or obj.type != 'MESH' or not obj.data or not obj.data.vertices:
         return (0, 0)
     
-    coords = [obj.matrix_world @ Vector(corner) for corner in obj.bound_box]
-    xs = [v.x for v in coords]
-    ys = [v.y for v in coords]
-    
-    if not xs or not ys:
-        return (0, 0)
-    
-    width = max(xs) - min(xs)
-    height = max(ys) - min(ys)
-    return (width, height)
+    try:
+        from .terrain_fit import world_bbox_from_vertices
+        bb_min, bb_max = world_bbox_from_vertices(obj)
+        width = bb_max[0] - bb_min[0]
+        height = bb_max[1] - bb_min[1]
+        return (width, height)
+    except Exception:
+        # Fallback to bound_box if vertex method fails
+        coords = [obj.matrix_world @ Vector(corner) for corner in obj.bound_box]
+        xs = [v.x for v in coords]
+        ys = [v.y for v in coords]
+        if not xs or not ys:
+            return (0, 0)
+        return (max(xs) - min(xs), max(ys) - min(ys))
 
 
 def bbox_size_xy_world(obj):
@@ -81,24 +88,28 @@ def bbox_size_xy_world(obj):
 
 def _bbox_center_xy_world(obj):
     """
-    Get bounding box center in world space (XY only).
+    Get bounding box center in world space (XY only) using vertex data.
     
     Returns:
         (center_x, center_y) in Blender world units
     """
-    if not obj or not hasattr(obj, 'bound_box'):
+    if not obj or obj.type != 'MESH' or not obj.data or not obj.data.vertices:
         return (0, 0)
     
-    coords = [obj.matrix_world @ Vector(corner) for corner in obj.bound_box]
-    xs = [v.x for v in coords]
-    ys = [v.y for v in coords]
-    
-    if not xs or not ys:
-        return (0, 0)
-    
-    center_x = (min(xs) + max(xs)) / 2.0
-    center_y = (min(ys) + max(ys)) / 2.0
-    return (center_x, center_y)
+    try:
+        from .terrain_fit import world_bbox_from_vertices
+        bb_min, bb_max = world_bbox_from_vertices(obj)
+        center_x = (bb_min[0] + bb_max[0]) / 2.0
+        center_y = (bb_min[1] + bb_max[1]) / 2.0
+        return (center_x, center_y)
+    except Exception:
+        # Fallback to bound_box
+        coords = [obj.matrix_world @ Vector(corner) for corner in obj.bound_box]
+        xs = [v.x for v in coords]
+        ys = [v.y for v in coords]
+        if not xs or not ys:
+            return (0, 0)
+        return ((min(xs) + max(xs)) / 2.0, (min(ys) + max(ys)) / 2.0)
 
 
 def calibrate_terrain_to_world_bounds(scene, dem_obj, rgb_obj=None, tol_rel=0.02):
@@ -206,6 +217,17 @@ def calibrate_terrain_to_world_bounds(scene, dem_obj, rgb_obj=None, tol_rel=0.02
             rgb_obj.scale.y *= scale_y
         bpy.context.view_layer.update()
         _cal_log(f"[TerrainCal] Applied non-uniform scale: X={scale_x:.6f}, Y={scale_y:.6f} to DEM" + (f" and RGB" if rgb_obj else ""))
+
+        # Step 6b: Bake scale into vertices to eliminate ghost transform issues
+        try:
+            from .terrain_fit import _apply_scale
+            _apply_scale(dem_obj)
+            if rgb_obj:
+                _apply_scale(rgb_obj)
+            bpy.context.view_layer.update()
+            _cal_log("[TerrainCal] Scale baked into vertices (transform_apply)")
+        except Exception as bake_ex:
+            _cal_log(f"[TerrainCal] WARNING: Could not bake scale: {bake_ex}")
         
         # Step 7: Compute target center in local space
         target_c = Vector((target_w / 2.0, target_h / 2.0, dem_obj.location.z))

@@ -258,14 +258,10 @@ class M1DC_OT_RunPipeline(Operator):
         ok3 = False
         step1_msg = "Step1 Terrain: skipped"
 
-        # Determine terrain strategy (priority order):
-        # 1. terrain_obj_artifact_dir (OBJ artifact – highest priority)
-        # 2. terrain_root_dir (prepared dataset with validation)
-        # 3. terrain_dgm_dir / terrain_rgb_dir (deprecated direct folders)
-        obj_artifact_dir = getattr(s, "terrain_obj_artifact_dir", "").strip()
-        terrain_root = (s.terrain_root_dir.strip() if s.terrain_root_dir else "")
-        dgm_dir = (s.terrain_dgm_dir.strip() if s.terrain_dgm_dir else "")
-        rgb_dir = (s.terrain_rgb_dir.strip() if s.terrain_rgb_dir else "")
+        # ── TERRAIN MODE: Use centralised detect_terrain_mode() (OBJ dominates — hard rule) ──
+        from ... import ops as _ops_mod
+        _terrain_mode, _terrain_mode_path = _ops_mod.detect_terrain_mode(s)
+        log_info(f"[Pipeline] Terrain mode: {_terrain_mode} | path={_terrain_mode_path}")
 
         # Clear previous validation state
         s.terrain_validation_ok = False
@@ -274,10 +270,12 @@ class M1DC_OT_RunPipeline(Operator):
         s.terrain_rgb_count = 0
         s.terrain_overlap_count = 0
 
-        if obj_artifact_dir and os.path.isdir(obj_artifact_dir):
-            # OBJ artifact import logic
+        if _terrain_mode == "OBJ_ARTIFACT":
+            # ── OBJ artifact import (HARD PRIORITY — DEM/TIFF completely ignored) ──
+            obj_artifact_dir = os.path.dirname(_terrain_mode_path)
             log_info("[Pipeline] Terrain import via OBJ artifact (dedicated folder)")
             log_info(f"[Terrain] Mode: OBJ Artifact | Path: {obj_artifact_dir}")
+            log_info(f"[Terrain][OBJ_DOMINATES] DEM/TIFF pipelines are SUPPRESSED.")
             # T1: Check for basemap.json BEFORE import — warn if missing
             try:
                 from ..terrain.m1_basemap import has_basemap_json
@@ -319,18 +317,22 @@ class M1DC_OT_RunPipeline(Operator):
                 step1_msg = f"Step1 Terrain: import failed ({ex})"
                 ok3 = False
 
-        elif terrain_root and os.path.isdir(terrain_root):
-            # Prepared terrain dataset (OBJ or TIFF pipeline)
-            log_info("[Pipeline] Terrain import via prepared dataset")
-            # See ops.py lines 8850-9100 for full implementation
-            step1_msg = "Step1 Terrain: prepared dataset (implementation in ops.py)"
-            ok3 = False  # Placeholder
+        elif _terrain_mode == "DEM":
+            # ── DEM/TIFF pipeline (only when NO OBJ artifact exists) ──
+            terrain_root = getattr(s, "terrain_root_dir", "").strip()
+            dgm_dir = getattr(s, "terrain_dgm_dir", "").strip()
+            rgb_dir = getattr(s, "terrain_rgb_dir", "").strip()
 
-        elif (dgm_dir and os.path.isdir(dgm_dir)) or (rgb_dir and os.path.isdir(rgb_dir)):
-            # OLD PATH (DEPRECATED): Direct DGM/RGB folders (no validation)
-            log_warn("[Pipeline] Using deprecated terrain_dgm_dir / terrain_rgb_dir")
-            ok3 = _import_basemap_pipeline(s)
-            step1_msg = "Step1 Terrain: imported (deprecated path)" if ok3 else "Step1 Terrain: skipped"
+            if terrain_root and os.path.isdir(terrain_root):
+                log_info("[Pipeline] Terrain import via prepared dataset")
+                step1_msg = "Step1 Terrain: prepared dataset (implementation in ops.py)"
+                ok3 = False  # Placeholder
+            elif (dgm_dir and os.path.isdir(dgm_dir)) or (rgb_dir and os.path.isdir(rgb_dir)):
+                log_warn("[Pipeline] Using deprecated terrain_dgm_dir / terrain_rgb_dir")
+                ok3 = _import_basemap_pipeline(s)
+                step1_msg = "Step1 Terrain: imported (deprecated path)" if ok3 else "Step1 Terrain: skipped"
+        else:
+            log_info("[Pipeline] No terrain source configured — terrain import skipped")
 
         _update_world_origin_status(s)
 
@@ -340,7 +342,7 @@ class M1DC_OT_RunPipeline(Operator):
             _sr_terrain = StageReport(
                 stage="terrain_import", stage_number=1,
                 status="PASS" if ok3 else "SKIPPED",
-                inputs={"obj_artifact_dir": obj_artifact_dir, "terrain_root": terrain_root},
+                inputs={"terrain_mode": _terrain_mode, "terrain_mode_path": _terrain_mode_path or ""},
                 metrics={},
                 artifacts_created=[],
                 fatal_reason=None if ok3 else "No terrain imported",
@@ -468,6 +470,23 @@ class M1DC_OT_RunPipeline(Operator):
                             f"after={fit_info.get('terrain_size_after')} | "
                             f"err={fit_info.get('error', 0):.4f}m"
                         )
+
+                        # ── TERRAIN ACCEPTANCE PROOF ──
+                        try:
+                            from ..terrain.terrain_fit import terrain_acceptance_proof, _object_world_span
+                            t_span, t_center, _, _ = _object_world_span(dem_obj)
+                            tgt = fit_info.get('target_size', (0, 0))
+                            tgt_bbox = fit_info.get('target_bbox', ((0, 0), (0, 0)))
+                            city_cx = (tgt_bbox[0][0] + tgt_bbox[1][0]) * 0.5
+                            city_cy = (tgt_bbox[0][1] + tgt_bbox[1][1]) * 0.5
+                            terrain_acceptance_proof(
+                                dem_obj,
+                                city_span_xy=tgt,
+                                city_center_xy=(city_cx, city_cy),
+                                log_fn=lambda msg: log_info(msg),
+                            )
+                        except Exception as _ap_ex:
+                            log_warn(f"[Pipeline] Phase 2.2: Acceptance proof failed: {_ap_ex}")
                 elif not dem_obj:
                     log_warn("[Pipeline] Phase 2.2: No terrain object found — bbox-fit skipped")
                 else:

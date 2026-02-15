@@ -38,6 +38,109 @@ except ImportError:
 log = logging.getLogger(__name__)
 
 
+# ---------------------------------------------------------------------------
+# Tripwires & helpers
+# ---------------------------------------------------------------------------
+
+def _require_terrain_objects(terrain_col, ctx=""):
+    """Hard tripwire: terrain collection must contain at least 1 MESH."""
+    terrain_meshes = [o for o in terrain_col.objects if o.type == "MESH"]
+    if len(terrain_meshes) == 0:
+        raise RuntimeError(
+            f"[TERRAIN] Import produced 0 mesh objects. ctx={ctx}. "
+            f"Check terrain path/mode, importer errors, and deletion/cleanup steps."
+        )
+    return terrain_meshes
+
+
+def _neutralize_rotation(obj, log_fn=None):
+    """Ensure rotation is zero. Apply if non-zero so vertex coords are correct."""
+    import bpy
+    from math import radians
+    rot = obj.rotation_euler
+    threshold = radians(0.01)  # ~0.01 degree
+    if abs(rot.x) > threshold or abs(rot.y) > threshold or abs(rot.z) > threshold:
+        msg = (f"[TERRAIN][FIT] Non-zero rotation on '{obj.name}': "
+               f"({rot.x:.4f}, {rot.y:.4f}, {rot.z:.4f}) rad — applying rotation first")
+        if log_fn:
+            log_fn(msg)
+        # Apply rotation into mesh
+        prev_active = bpy.context.view_layer.objects.active
+        prev_selected = [o for o in bpy.context.selected_objects]
+        bpy.ops.object.select_all(action='DESELECT')
+        obj.select_set(True)
+        bpy.context.view_layer.objects.active = obj
+        bpy.ops.object.transform_apply(location=False, rotation=True, scale=False)
+        obj.select_set(False)
+        for o in prev_selected:
+            try:
+                o.select_set(True)
+            except Exception:
+                pass
+        bpy.context.view_layer.objects.active = prev_active
+
+
+def _detect_axis_swap(span_x, span_y, span_z, log_fn=None):
+    """Detect if terrain is in X/Z instead of X/Y (common OBJ import issue).
+
+    Returns True if the Z-span is much larger than Y-span, suggesting the
+    terrain lies in the X/Z plane rather than X/Y.
+    """
+    # If Z is large and Y is tiny, terrain is "standing" in X/Z
+    if span_z > 10 * span_y and span_z > 100:
+        msg = (f"[TERRAIN][FIT] AXIS SWAP DETECTED: span_x={span_x:.1f}, "
+               f"span_y={span_y:.1f}, span_z={span_z:.1f}. "
+               f"Terrain appears to lie in X/Z plane, not X/Y.")
+        if log_fn:
+            log_fn(msg)
+        return True
+    return False
+
+
+def _object_world_span(obj):
+    """Return (span_vector, center_vector, world_min, world_max) from obj vertices."""
+    bb_min, bb_max = world_bbox_from_vertices(obj)
+    from mathutils import Vector
+    mn = Vector(bb_min)
+    mx = Vector(bb_max)
+    span = mx - mn
+    center = (mx + mn) * 0.5
+    return span, center, mn, mx
+
+
+def terrain_acceptance_proof(terrain_obj, city_span_xy, city_center_xy, log_fn=None):
+    """Log terrain acceptance proof: spans, center delta, scale, relative error.
+
+    Returns dict with diagnostics.
+    """
+    _log = log_fn or print
+    span, center, mn, mx = _object_world_span(terrain_obj)
+    city_sx, city_sy = city_span_xy
+    city_cx, city_cy = city_center_xy
+
+    err_x = abs(span.x - city_sx) / city_sx if city_sx > 0 else 999
+    err_y = abs(span.y - city_sy) / city_sy if city_sy > 0 else 999
+    d_cx = abs(center.x - city_cx)
+    d_cy = abs(center.y - city_cy)
+
+    _log(f"[TERRAIN][ACCEPT] city_span=({city_sx:.1f}, {city_sy:.1f})")
+    _log(f"[TERRAIN][ACCEPT] terrain_span=({span.x:.1f}, {span.y:.1f})")
+    _log(f"[TERRAIN][ACCEPT] rel_err=({err_x:.4f}, {err_y:.4f})")
+    _log(f"[TERRAIN][ACCEPT] city_center=({city_cx:.1f}, {city_cy:.1f})")
+    _log(f"[TERRAIN][ACCEPT] terrain_center=({center.x:.1f}, {center.y:.1f})")
+    _log(f"[TERRAIN][ACCEPT] center_delta=({d_cx:.1f}, {d_cy:.1f})")
+    _log(f"[TERRAIN][ACCEPT] terrain.scale={tuple(terrain_obj.scale)}")
+    _log(f"[TERRAIN][ACCEPT] terrain.rotation={tuple(terrain_obj.rotation_euler)}")
+    _log(f"[TERRAIN][ACCEPT] terrain.location={tuple(terrain_obj.location)}")
+
+    return {
+        'terrain_span': (span.x, span.y),
+        'city_span': (city_sx, city_sy),
+        'err_rel': (err_x, err_y),
+        'center_delta': (d_cx, d_cy),
+    }
+
+
 def _fit_log(msg: str) -> None:
     """Log to both console and Python logger."""
     print(msg)
@@ -267,6 +370,22 @@ def fit_terrain_to_citygml(terrain_obj, citygml_objs, eps=0.05, rgb_obj=None):
 
     _fit_log("[TERRAIN][FIT] === TERRAIN BBOX-FIT START ===")
     _fit_log(f"[TERRAIN][FIT] terrain={terrain_obj.name} | citygml_tiles={len(gml_meshes)}")
+
+    # ── Step 0a: Neutralize rotation (prevents axis-skewed scaling) ──
+    _neutralize_rotation(terrain_obj, log_fn=_fit_log)
+    if rgb_obj:
+        _neutralize_rotation(rgb_obj, log_fn=_fit_log)
+
+    # ── Step 0b: Check for X/Z axis swap ──
+    bpy.context.view_layer.update()
+    _pre_min, _pre_max = world_bbox_from_vertices(terrain_obj)
+    _pre_span_x = _pre_max[0] - _pre_min[0]
+    _pre_span_y = _pre_max[1] - _pre_min[1]
+    _pre_span_z = _pre_max[2] - _pre_min[2]
+    if _detect_axis_swap(_pre_span_x, _pre_span_y, _pre_span_z, log_fn=_fit_err):
+        _fit_err(f"[TERRAIN][FIT] Terrain spans: X={_pre_span_x:.1f} Y={_pre_span_y:.1f} Z={_pre_span_z:.1f}")
+        _fit_err("[TERRAIN][FIT] ⚠  Terrain may need a 90° X-rotation before fitting. "
+                 "Proceeding anyway — verify result visually.")
 
     # ── Step 1: Target extent from CityGML tile grid ──
     # Uses tile locations + tile_size (NOT mesh vertex bboxes)

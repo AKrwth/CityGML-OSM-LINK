@@ -2105,6 +2105,31 @@ def _face_key_from_osm_id_int(face_val) -> str:
     return normed
 
 
+# ── P4 HELPERS: Blender 4.5 STRING attributes require bytes ──
+def _key_to_str(v):
+    """Convert any face attribute value to a clean string key for dict lookup."""
+    if v is None:
+        return None
+    if isinstance(v, (bytes, bytearray)):
+        v = v.decode("utf-8", errors="replace")
+    return str(v)
+
+
+def _to_attr_bytes(v):
+    """Convert any value to bytes for Blender STRING attribute write.
+    Blender 4.5: StringAttributeValue.value MUST be bytes, not str.
+    """
+    if v is None:
+        return b""
+    if isinstance(v, (bytes, bytearray)):
+        return bytes(v)
+    if isinstance(v, str):
+        if v == "None":
+            return b""
+        return v.encode("utf-8", errors="replace")
+    return str(v).encode("utf-8", errors="replace")
+
+
 def _materialize_osm_features(mesh, osm_id_attr, gpkg_path):
     """
     Write OSM semantic attributes (name, building, amenity, address) to FACE attributes.
@@ -2183,12 +2208,25 @@ def _materialize_osm_features(mesh, osm_id_attr, gpkg_path):
 
     # Determine primary ID attribute (osm_way_id preferred)
     id_attr = osm_way_id_attr or osm_id_attr_int
+    primary_id_name = 'osm_way_id' if osm_way_id_attr else ('osm_id_int' if osm_id_attr_int else None)
     if id_attr is None:
         print(f"[Phase4][Skip] mesh={mesh_name} No valid FACE id attr (osm_way_id/osm_id_int) or attr length mismatch (faces={face_count})")
         log_warn(f"[Phase4][Skip] {mesh_name}: No valid ID attribute or length mismatch")
         return 0
 
-    print(f"[Phase4][Guard] mesh={mesh_name} faces={face_count} primary_id_attr={'osm_way_id' if osm_way_id_attr else 'osm_id_int'}")
+    # ── P4 PRIMARY-ID GUARD: Log exactly which attribute is used ──
+    print(f"[Phase4][Guard] mesh={mesh_name} faces={face_count} primary_id_attr={primary_id_name}")
+    if osm_key_col and primary_id_name != osm_key_col:
+        log_warn(f"[Phase4][GUARD] osm_key_col={osm_key_col} but primary_id_attr={primary_id_name} — may cause key mismatch!")
+        print(f"[Phase4][GUARD] WARNING: osm_key_col={osm_key_col} != primary_id_attr={primary_id_name}")
+    # Sample first non-zero value from primary ID for type proof
+    _sample_id_val = None
+    for _si in range(min(20, face_count)):
+        _sv = id_attr.data[_si].value
+        if _sv and _sv != 0:
+            _sample_id_val = _sv
+            break
+    print(f"[Phase4][Guard] primary_id sample value={_sample_id_val!r} type={type(_sample_id_val).__name__}")
 
     # Legacy attribute resolution (for backwards compat)
     if osm_id_attr_str and (osm_id_attr_str.domain != "FACE" or osm_id_attr_str.data_type != "STRING"):
@@ -2453,19 +2491,20 @@ def _materialize_osm_features(mesh, osm_id_attr, gpkg_path):
         osm_id = _safe_read_face_id_attr(mesh, idx)
 
         if not osm_id:
-            # No link, write empty strings to all attrs + has_feature=0
+            # No link, write empty bytes to all attrs + has_feature=0
             if has_feature_attr:
                 has_feature_attr.data[idx].value = 0
             for attr in attr_handles.values():
                 if attr and idx < len(attr.data):
-                    attr.data[idx].value = ""
+                    attr.data[idx].value = b""  # FIX: Blender 4.5 STRING attrs require bytes
             continue
 
         # Record sample face osm_ids (first 10)
         if len(sample_face_osm_ids) < 10:
             sample_face_osm_ids.append(osm_id)
 
-        feature = features.get(osm_id)
+        # ── P4 FIX: Ensure lookup key is str (features dict keys are always str via _norm_id) ──
+        feature = features.get(_key_to_str(osm_id) if not isinstance(osm_id, str) else osm_id)
 
         if not feature:
             # MISS: Link exists but no feature row found in source
@@ -2475,17 +2514,20 @@ def _materialize_osm_features(mesh, osm_id_attr, gpkg_path):
             
             # DIAGNOSTIC: Log first few misses to debug normalization
             if features_miss <= 3:
-                print(f"\n[MATERIALIZE_DIAGNOSTIC] MISS: mesh={mesh_name} face={idx} osm_id={osm_id}")
+                print(f"\n[MATERIALIZE_DIAGNOSTIC] MISS: mesh={mesh_name} face={idx} osm_id={osm_id} type={type(osm_id).__name__}")
                 print(f"  Looking for key='{osm_id}' in features dict")
                 print(f"  Features dict has {len(features)} entries")
                 sample_keys_in_dict = list(features.keys())[:5]
                 print(f"  Sample keys in dict: {sample_keys_in_dict}")
+                # Type proof: compare key types
+                if sample_keys_in_dict:
+                    print(f"  Dict key type={type(sample_keys_in_dict[0]).__name__} face key type={type(osm_id).__name__}")
             
             if has_feature_attr:
                 has_feature_attr.data[idx].value = 0
             for attr in attr_handles.values():
                 if attr and idx < len(attr.data):
-                    attr.data[idx].value = ""
+                    attr.data[idx].value = b""  # FIX: Blender 4.5 STRING attrs require bytes
             continue
 
         # HIT: Found feature row
@@ -2500,9 +2542,14 @@ def _materialize_osm_features(mesh, osm_id_attr, gpkg_path):
             if attr is None or idx >= len(attr.data):
                 continue
             val = feature.get(gpkg_col, "")
-            attr.data[idx].value = val
+            attr.data[idx].value = _to_attr_bytes(val)  # FIX: must be bytes for Blender 4.5
             if val and str(val).strip():
                 strings_written += 1
+
+        # [P4][PROOF] One-shot diagnostic on first hit
+        if features_hit == 1:
+            print(f"[P4][PROOF] raw_id={osm_id} type={type(osm_id).__name__} "
+                  f"hit=True sample_feature_keys={list(features.keys())[:3]}")
 
         # ========================================
         # FORENSIC: Log probe face STRING writes
@@ -2536,8 +2583,9 @@ def _materialize_osm_features(mesh, osm_id_attr, gpkg_path):
         pass
 
     # ========================================
-    # Debug Proof: hits/miss + sample nonzero codes
+    # [P4][STATS] Per-mesh summary (surgical proof)
     # ========================================
+    print(f"\n[P4][STATS] mesh={mesh_name} hits={features_hit} misses={features_miss} faces={face_count} strings_written={strings_written}")
     print(f"\n[PHASE4] source={feature_source} hits={features_hit} miss={features_miss} strings_written={strings_written}")
     if hit_samples:
         print(f"[PHASE4] hit_samples (first 5): {hit_samples[:5]}")
@@ -2669,7 +2717,9 @@ def _materialize_osm_features(mesh, osm_id_attr, gpkg_path):
             attr = attr_handles[gpkg_col]
             try:
                 val = attr.data[idx].value
-                if val and str(val).strip():
+                # FIX: bytes-safe check for Blender 4.5 STRING attrs
+                cleaned = _bytes_to_clean_str(val) if val else ""
+                if cleaned and cleaned != "__NULL__" and cleaned.strip():
                     if gpkg_col not in nonzero_found:
                         nonzero_found[gpkg_col] = 0
                     nonzero_found[gpkg_col] += 1
@@ -2747,6 +2797,63 @@ def code_attr_to_feature_key(code_attr: str) -> str:
     return k
 
 
+# ── P5 HELPER: Blender 4.5 STRING attributes return bytes ──
+def _bytes_to_clean_str(v):
+    """Decode a Blender STRING attribute value (bytes in Blender 4.5) to a clean Python str.
+    Returns '__NULL__' for None/empty/'None', otherwise the decoded string.
+
+    Also handles the 'b\\'...\\'' string representation pattern from DB/cache.
+    """
+    if v is None:
+        return "__NULL__"
+    if isinstance(v, (bytes, bytearray)):
+        try:
+            s = v.decode("utf-8", errors="replace")
+        except Exception:
+            s = str(v)
+    else:
+        s = str(v)
+
+    # Handle string representation of bytes: "b'house'" or 'b"house"'
+    if isinstance(s, str):
+        if s.startswith("b'") and s.endswith("'"):
+            s = s[2:-1]
+        elif s.startswith('b"') and s.endswith('"'):
+            s = s[2:-1]
+
+    if s == "" or s == "None":
+        return "__NULL__"
+    return s
+
+
+def _count_nonzero_int_attr(mesh, attr_name):
+    """Count faces with nonzero value for an INT face attribute.
+
+    This is a standalone post-check — it reads the attribute independently
+    of any writeback variables, making it immune to control-flow bugs.
+
+    Args:
+        mesh: Blender mesh data (bpy.types.Mesh)
+        attr_name: Name of the INT face attribute (e.g., 'osm_building_code')
+
+    Returns:
+        int: Number of faces where attr value != 0, or 0 if attr missing
+    """
+    a = mesh.attributes.get(attr_name)
+    if not a:
+        return 0
+    if a.domain != 'FACE' or a.data_type != 'INT':
+        return 0
+    nz = 0
+    for i in range(len(mesh.polygons)):
+        try:
+            if a.data[i].value != 0:
+                nz += 1
+        except (IndexError, RuntimeError):
+            pass
+    return nz
+
+
 def _materialize_legend_codes(mesh, gpkg_path, output_dir):
     """
     Write legend-encoded integer codes to FACE attributes.
@@ -2760,7 +2867,7 @@ def _materialize_legend_codes(mesh, gpkg_path, output_dir):
         output_dir: Base output directory (legends in output_dir/legends/)
 
     Returns:
-        int: Total number of code attributes written
+        int: Total number of nonzero code values written (deterministic)
     """
     from .pipeline.diagnostics.legend_encoding import (
         CODE_KEYS, get_legend_cache_dir, init_legend_caches,
@@ -2769,6 +2876,11 @@ def _materialize_legend_codes(mesh, gpkg_path, output_dir):
 
     mesh_name = getattr(mesh, "name", "<unknown>")
     print(f"\n[M1DC Phase5] Legend code writeback for mesh: {mesh_name}")
+
+    # CRITICAL: Initialize face_count FIRST — used everywhere below.
+    # Previously this was set late, causing UnboundLocalError in forensic logging.
+    face_count = len(mesh.polygons)
+    print(f"[M1DC Phase5] face_count={face_count}")
 
     # Get legends directory
     legends_dir = get_legend_cache_dir(output_dir)
@@ -2884,10 +2996,13 @@ def _materialize_legend_codes(mesh, gpkg_path, output_dir):
     if probe_face_idx is not None:
         print(f"[M1DC P5 PROBE] mesh={mesh_name} probe_face={probe_face_idx} osm_id_int={probe_osm_id}")
 
-        # Read raw STRING value for building
+        # Read raw STRING value for building (bytes in Blender 4.5)
         raw_building = ""
         if building_attr and building_attr.domain == "FACE" and building_attr.data_type == "STRING":
-            raw_building = building_attr.data[probe_face_idx].value or ""
+            _raw_b = building_attr.data[probe_face_idx].value or b""
+            raw_building = _bytes_to_clean_str(_raw_b)
+            if raw_building == "__NULL__":
+                raw_building = ""
 
         print(f"\n[M1DC P5 ENCODE] mesh={mesh_name} face={probe_face_idx} feature_key=building")
         print(f"  raw='{raw_building}'")
@@ -2942,16 +3057,40 @@ def _materialize_legend_codes(mesh, gpkg_path, output_dir):
             sample_vals.append(repr(val))
         print(f"\n[M1DC P5 SAMPLE] First 20 building STRING values: {sample_vals}")
 
-        # Count non-empty
-        non_empty = sum(1 for poly in mesh.polygons if building_attr.data[poly.index].value.strip())
-        print(f"[M1DC P5 SAMPLE] Total non-empty building: {non_empty}/{face_count}")
+        # Count non-empty (bytes-safe)
+        nonempty_count = 0
+        for poly in mesh.polygons:
+            raw = building_attr.data[poly.index].value
+            cleaned = _bytes_to_clean_str(raw)
+            if cleaned != "__NULL__" and cleaned.strip():
+                nonempty_count += 1
+        print(f"[M1DC P5 SAMPLE] Total non-empty building: {nonempty_count}/{face_count}")
     else:
         print(f"[M1DC FORENSIC] building attribute not found or wrong type!")
+        nonempty_count = 0
+
+    # ── P5 ABORT GUARD: If ALL STRING source attrs are empty, Phase 4 didn't write ──
+    _p5_any_nonempty = False
+    for _p5_key, _p5_sname, _p5_cname in attrs_to_encode:
+        _p5_src = mesh.attributes.get(_p5_sname)
+        if _p5_src and _p5_src.domain == "FACE" and _p5_src.data_type == "STRING":
+            for _p5_poly in mesh.polygons:
+                _p5_raw = _p5_src.data[_p5_poly.index].value
+                _p5_val = _bytes_to_clean_str(_p5_raw)
+                if _p5_val != "__NULL__" and _p5_val.strip():
+                    _p5_any_nonempty = True
+                    break
+        if _p5_any_nonempty:
+            break
+    if not _p5_any_nonempty and face_count > 0:
+        print("[P5][ABORT] No non-empty STRING values found on any source attr (Phase 4 missing or failed).")
+        log_warn("[P5][ABORT] No non-empty STRING values found. Phase 4 must write strings first.")
+        return 0
 
     # Write codes to faces with detailed logging
     total_codes_written = 0
     nonzero_codes_written = 0
-    face_count = len(mesh.polygons)
+    # face_count already set at function top
 
     # Logging limits
     legend_hit_samples = {key: [] for key, _, _ in attrs_to_encode}
@@ -2977,6 +3116,10 @@ def _materialize_legend_codes(mesh, gpkg_path, output_dir):
                 continue
 
             string_value = string_attr.data[idx].value
+            # ── P5 FIX: Blender 4.5 STRING attrs return bytes; decode to clean str ──
+            string_value = _bytes_to_clean_str(string_value)
+            if string_value == "__NULL__":
+                string_value = ""  # legend_encode treats empty as code=0
             # [PHASE 12 FIX] Use normalized feature key for legend cache lookup
             # Legend cache is keyed by "{feature_key}_code" where feature_key is normalized
             feature_key = code_attr_to_feature_key(code_name)
@@ -3061,11 +3204,12 @@ def _materialize_legend_codes(mesh, gpkg_path, output_dir):
         if any_nonzero:
             faces_with_any_nonzero += 1
 
-        # Specific building counters
+        # Specific building counters (bytes-safe)
         if building_str_attr:
             try:
                 val = building_str_attr.data[idx].value
-                if val and val.strip() and val.strip() != "__NULL__":
+                cleaned = _bytes_to_clean_str(val)
+                if cleaned != "__NULL__" and cleaned.strip():
                     faces_with_nonempty_building += 1
             except Exception:
                 pass
@@ -3242,7 +3386,17 @@ def _materialize_legend_codes(mesh, gpkg_path, output_dir):
         print(f"[PROOF][LEGENDS] ERROR: {ex}")
         raise RuntimeError(f"[PROOF][LEGENDS] {ex}") from ex
 
-    return total_codes_written
+    # ── ACCEPTANCE CHECK: post-count vs return value consistency ──
+    # Use nonzero_codes_written as deterministic return value (not total_codes_written
+    # which includes zero-value writes and is misleading).
+    post_nonzero = _count_nonzero_int_attr(mesh, "osm_building_code")
+    if post_nonzero > 0 and nonzero_codes_written == 0:
+        log_error(f"[P5][ACCEPT] INCONSISTENCY: post_nonzero_building_code={post_nonzero} "
+                  f"but nonzero_codes_written={nonzero_codes_written}. Reporting bug!")
+    print(f"[P5][ACCEPT] mesh={mesh_name} nonzero_codes_written={nonzero_codes_written} "
+          f"post_nonzero_building_code={post_nonzero} face_count={face_count}")
+
+    return nonzero_codes_written
 
 
 def _query_feature_columns(gpkg_path, table, id_col, osm_id, columns):
@@ -4262,6 +4416,56 @@ def _link_gpkg_to_citygml(s):
 
 
 # ============================================================================
+# TERRAIN MODE DETECTION — OBJ dominates (hard rule, not heuristic)
+# ============================================================================
+
+def detect_terrain_mode(s):
+    """Deterministic terrain mode detection.
+
+    HARD RULE: If terrain_obj_artifact_dir is set AND contains a .obj file,
+    *always* use OBJ_ARTIFACT mode.  DEM/TIFF is only used when OBJ is
+    not available.  This prevents the pipeline from importing a DEM tile
+    when an authoritative OBJ artifact exists.
+
+    Args:
+        s: M1DCSettings (scene settings)
+
+    Returns:
+        (mode, path):
+            ("OBJ_ARTIFACT", <path-to-obj>)   — OBJ takes precedence (hard)
+            ("DEM", <dem-dir-or-root>)          — raster DEM fallback
+            ("NONE", None)                     — nothing configured
+    """
+    # ── Priority 1: OBJ artifact (hard dominate) ──
+    obj_dir = getattr(s, "terrain_obj_artifact_dir", "").strip()
+    if obj_dir and os.path.isdir(obj_dir):
+        from .pipeline.terrain.m1_basemap import _find_first_obj
+        obj_path = _find_first_obj(obj_dir)
+        if obj_path:
+            log_info(f"[TerrainMode] OBJ_ARTIFACT (hard) | path={obj_path}")
+            return "OBJ_ARTIFACT", obj_path
+        else:
+            log_warn(f"[TerrainMode] terrain_obj_artifact_dir set but no .obj found in {obj_dir}")
+
+    # ── Priority 2: Prepared terrain root (DGM + RGB) ──
+    terrain_root = getattr(s, "terrain_root_dir", "").strip()
+    if terrain_root and os.path.isdir(terrain_root):
+        log_info(f"[TerrainMode] DEM (terrain_root_dir) | path={terrain_root}")
+        return "DEM", terrain_root
+
+    # ── Priority 3: Deprecated split DGM/RGB dirs ──
+    dgm_dir = getattr(s, "terrain_dgm_dir", "").strip()
+    rgb_dir = getattr(s, "terrain_rgb_dir", "").strip()
+    if (dgm_dir and os.path.isdir(dgm_dir)) or (rgb_dir and os.path.isdir(rgb_dir)):
+        path = dgm_dir if (dgm_dir and os.path.isdir(dgm_dir)) else rgb_dir
+        log_info(f"[TerrainMode] DEM (legacy dgm/rgb dirs) | path={path}")
+        return "DEM", path
+
+    log_info("[TerrainMode] NONE — no terrain source configured")
+    return "NONE", None
+
+
+# ============================================================================
 # TERRAIN CACHE MECHANISM — Avoid rebuilding expensive DEM terrain
 # ============================================================================
 
@@ -5038,6 +5242,13 @@ def _import_basemap_pipeline(s) -> bool:
         True if terrain merge successful (BlenderGIS import is optional),
         False if merge itself failed
     """
+    # ── OBJ DOMINATES GUARD: Never run DEM pipeline when OBJ artifact exists ──
+    _mode, _mode_path = detect_terrain_mode(s)
+    if _mode == "OBJ_ARTIFACT":
+        log_info(f"[Terrain] OBJ artifact active ({_mode_path}) → DEM pipeline SKIPPED (OBJ dominates)")
+        print(f"[Terrain][OBJ_DOMINATES] Skipping _import_basemap_pipeline — OBJ artifact takes precedence")
+        return False  # Not an error, just not applicable
+    
     dgm_dir = getattr(s, "terrain_dgm_dir", "").strip()
     rgb_dir = getattr(s, "terrain_rgb_dir", "").strip()
     output_dir = getattr(s, "output_dir", "").strip()
@@ -5395,6 +5606,31 @@ def _import_terrain_dem_mesh(dem_tif: str, rgb_tif: str, merged_dir: str, world_
         dem_step = ui_dem_step
     elif dem_step != 1:
         log_info(f"[Terrain] DEM auto-decimated to step={dem_step} to keep import responsive")
+
+    # ── DEM STRIP TRIPWIRE: Fail-fast if DEM extent is absurdly non-square ──
+    # A valid DEM should have roughly comparable X/Y extent.
+    # A span ratio > 10 means it's a strip (corrupted, wrong axis mapping, or
+    # pixel→meter conversion error) and will produce "Kaugummi-Terrain".
+    try:
+        from PIL import Image
+        Image.MAX_IMAGE_PIXELS = None
+        with Image.open(dem_tif) as _img:
+            _dem_w, _dem_h = _img.size
+        if _dem_w > 0 and _dem_h > 0:
+            _span_ratio = max(_dem_w, _dem_h) / max(1, min(_dem_w, _dem_h))
+            log_info(f"[Terrain][STRIP_CHECK] DEM pixels: {_dem_w}x{_dem_h} ratio={_span_ratio:.1f}")
+            if _span_ratio > 10:
+                raise RuntimeError(
+                    f"[Terrain][STRIP_TRIPWIRE] DEM extent looks like a strip "
+                    f"({_dem_w}x{_dem_h}, ratio={_span_ratio:.1f}). "
+                    f"This produces invalid terrain. Aborting DEM import."
+                )
+    except ImportError:
+        log_warn("[Terrain][STRIP_CHECK] PIL not available, skipping strip check")
+    except RuntimeError:
+        raise  # re-raise our own tripwire
+    except Exception as _ex:
+        log_warn(f"[Terrain][STRIP_CHECK] Could not verify DEM dimensions: {_ex}")
     
     # Step 0.5: Store all objects BEFORE imports so we can identify newly imported ones
     existing_objs = set(bpy.data.objects)
@@ -5560,8 +5796,14 @@ def _import_terrain_dem_mesh(dem_tif: str, rgb_tif: str, merged_dir: str, world_
                     rgb_obj.rotation_euler = dem_obj.rotation_euler.copy()
                     rgb_obj.scale = dem_obj.scale.copy()
                     
-                    # Match dimensions (plane mesh might be smaller than DEM mesh)
-                    rgb_obj.dimensions = dem_obj.dimensions.copy()
+                    # Match dimensions via scale factor (NOT obj.dimensions which is
+                    # a derived value and unreliable when rotation/scale are non-trivial)
+                    dem_dims = dem_obj.dimensions
+                    rgb_dims = rgb_obj.dimensions
+                    if rgb_dims.x > 1e-6 and rgb_dims.y > 1e-6 and rgb_dims.z > 1e-6:
+                        rgb_obj.scale.x *= dem_dims.x / rgb_dims.x if rgb_dims.x > 1e-6 else 1.0
+                        rgb_obj.scale.y *= dem_dims.y / rgb_dims.y if rgb_dims.y > 1e-6 else 1.0
+                        rgb_obj.scale.z *= dem_dims.z / rgb_dims.z if rgb_dims.z > 1e-6 else 1.0
                     
                     log_info(f"[Terrain] Aligned RGB to DEM: loc={tuple(dem_obj.location)}, dim={tuple(dem_obj.dimensions)}")
                 except Exception as e:

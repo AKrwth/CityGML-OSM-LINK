@@ -15,9 +15,9 @@ except ImportError:
     from utils.logging_system import log_info, log_warn, log_error
 
 try:
-    from ...pipeline.terrain.terrain_fit import fit_terrain_to_citygml
+    from ...pipeline.terrain.terrain_fit import fit_terrain_to_citygml, _require_terrain_objects
 except ImportError:
-    from pipeline.terrain.terrain_fit import fit_terrain_to_citygml
+    from pipeline.terrain.terrain_fit import fit_terrain_to_citygml, _require_terrain_objects
 
 try:
     from ...pipeline.terrain.terrain_validation import get_terrain_object, collect_gml_objects
@@ -49,6 +49,16 @@ class M1DC_OT_TerrainFitBBox(Operator):
             log_error(f"[TERRAIN][FIT] {msg}")
             self.report({"ERROR"}, msg)
             return {"CANCELLED"}
+
+        # ── Hard tripwire: TERRAIN collection must have meshes ──
+        terrain_col = bpy.data.collections.get("TERRAIN")
+        if terrain_col:
+            try:
+                _require_terrain_objects(terrain_col, ctx="TerrainFitBBox operator")
+            except RuntimeError as rt_ex:
+                log_error(str(rt_ex))
+                self.report({"ERROR"}, str(rt_ex))
+                return {"CANCELLED"}
 
         # ── Check if already fitted ──
         if terrain_obj.get("M1DC_TERRAIN_FIT"):

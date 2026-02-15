@@ -176,6 +176,65 @@ def check_terrain_rgb_scale():
         log_warn("[TRIPWIRE] No terrain/RGB objects found, skipping scale check")
 
 
+def check_terrain_anisotropic_scale():
+    """
+    TRIPWIRE 4: Terrain objects must not have non-uniform (anisotropic) scale.
+
+    Detects sx != sy which causes one-axis stretching artifacts.
+    Also logs terrain BBox for comparison with CityGML BBox.
+    """
+    col = bpy.data.collections.get(DGM_COLLECTION)
+    if not col:
+        log_warn(f"[TRIPWIRE] Collection '{DGM_COLLECTION}' not found, skipping anisotropic scale check")
+        return
+
+    mesh_objs = [o for o in col.objects if o.type == 'MESH']
+    if not mesh_objs:
+        log_warn(f"[TRIPWIRE] No mesh objects in '{DGM_COLLECTION}', skipping anisotropic scale check")
+        return
+
+    for obj in mesh_objs:
+        sx, sy, sz = obj.scale
+        if abs(sx - sy) > 1e-6:
+            log_warn(
+                f"[TERRAIN][TRIPWIRE] Non-uniform scale on '{obj.name}': "
+                f"scale=({sx:.6f}, {sy:.6f}, {sz:.6f}) — sx != sy causes axis stretching!"
+            )
+            print(
+                f"[TERRAIN][TRIPWIRE] Non-uniform scale: {obj.name} "
+                f"scale=({sx:.6f}, {sy:.6f}, {sz:.6f})"
+            )
+        if abs(sx - sz) > 1e-6 or abs(sy - sz) > 1e-6:
+            log_warn(
+                f"[TERRAIN][TRIPWIRE] Non-isotropic scale on '{obj.name}': "
+                f"scale=({sx:.6f}, {sy:.6f}, {sz:.6f})"
+            )
+
+        # Log terrain BBox for diagnostic comparison with CityGML
+        try:
+            pts = [obj.matrix_world @ Vector(c) for c in obj.bound_box]
+            xs = [p.x for p in pts]
+            ys = [p.y for p in pts]
+            zs = [p.z for p in pts]
+            xmin, xmax = min(xs), max(xs)
+            ymin, ymax = min(ys), max(ys)
+            zmin, zmax = min(zs), max(zs)
+            log_info(
+                f"[TERRAIN][BBOX] '{obj.name}' "
+                f"X=[{xmin:.1f}, {xmax:.1f}] ({xmax-xmin:.1f}m) "
+                f"Y=[{ymin:.1f}, {ymax:.1f}] ({ymax-ymin:.1f}m) "
+                f"Z=[{zmin:.1f}, {zmax:.1f}] ({zmax-zmin:.1f}m)"
+            )
+            log_info(
+                f"[TERRAIN][BBOX] scale=({sx:.6f}, {sy:.6f}, {sz:.6f}) "
+                f"dims=({obj.dimensions.x:.1f}, {obj.dimensions.y:.1f}, {obj.dimensions.z:.1f})"
+            )
+        except Exception as ex:
+            log_warn(f"[TERRAIN][BBOX] Failed to compute BBox for '{obj.name}': {ex}")
+
+    log_info(f"[TRIPWIRE] Terrain anisotropic scale check done ({len(mesh_objs)} objects)")
+
+
 def run_geometry_tripwires():
     """
     Run all geometry tripwire checks.
@@ -196,6 +255,9 @@ def run_geometry_tripwires():
         # TRIPWIRE 3: Terrain/RGB scale
         check_terrain_rgb_scale()
 
+        # TRIPWIRE 4: Terrain anisotropic scale + BBox diagnostic
+        check_terrain_anisotropic_scale()
+
         # Success
         log_info("[TRIPWIRE] ╔═══════════════════════════════════╗")
         log_info("[TRIPWIRE] ║ GEOMETRY CHECKS PASSED            ║")
@@ -204,6 +266,7 @@ def run_geometry_tripwires():
         log_info("[TRIPWIRE]   ✓ CityGML scale OK")
         log_info("[TRIPWIRE]   ✓ CityGML spacing OK")
         log_info("[TRIPWIRE]   ✓ Terrain/RGB scale OK")
+        log_info("[TRIPWIRE]   ✓ Terrain anisotropic scale checked")
 
     except RuntimeError as e:
         log_error(f"[TRIPWIRE] GEOMETRY CHECK FAILED")

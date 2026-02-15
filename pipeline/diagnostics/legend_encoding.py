@@ -683,6 +683,20 @@ def legend_encode(attr_name_code: str, value: str) -> int:
     if value is None:
         return 0
 
+    # FIX: Blender 4.5 STRING attrs return bytes — decode first
+    if isinstance(value, (bytes, bytearray)):
+        try:
+            value = value.decode("utf-8", errors="replace")
+        except Exception:
+            value = str(value)
+
+    # Handle string representation of bytes: "b'house'" from DB/cache
+    if isinstance(value, str):
+        if value.startswith("b'") and value.endswith("'"):
+            value = value[2:-1]
+        elif value.startswith('b"') and value.endswith('"'):
+            value = value[2:-1]
+
     v = value.strip() if isinstance(value, str) else str(value).strip()
     if not v:
         return 0

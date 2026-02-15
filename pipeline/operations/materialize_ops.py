@@ -526,6 +526,26 @@ class M1DC_OT_MaterializeLinks(Operator):
                         _log_info(f"[E][P5] Non-zero codes per mesh: {p5_nonzero_per_mesh}")
                         _log_info(f"[E][P5] Total legend codes across all meshes: {p5_total}")
 
+                        # ── P5 ACCEPTANCE: Post-count verification ──
+                        # Independent recount of nonzero codes (immune to control-flow bugs)
+                        try:
+                            count_nonzero = getattr(ops_module, "_count_nonzero_int_attr", None)
+                            if count_nonzero:
+                                p5_post_total = 0
+                                for mesh_obj in mesh_objs:
+                                    nz = count_nonzero(mesh_obj.data, "osm_building_code")
+                                    if nz > 0:
+                                        p5_post_total += nz
+                                _log_info(f"[P5][ACCEPT] post_nonzero_building_code_total={p5_post_total}")
+                                if p5_post_total > 0 and p5_total == 0:
+                                    log_error(f"[P5][ACCEPT] FAIL: Post-count={p5_post_total} but "
+                                              f"p5_total={p5_total}. Reporting bug in P5!")
+                                    # Fix the reported total from post-count
+                                    p5_total = p5_post_total
+                                    log_warn(f"[P5][ACCEPT] Corrected p5_total to {p5_total} from post-count")
+                        except Exception as _accept_ex:
+                            _log_info(f"[P5][ACCEPT] Post-count check failed: {_accept_ex}")
+
             except Exception as ex:
                 log_warn(f"[Materialize] P5 setup failed: {ex}")
             _log_info(f"[PROOF][P5_READBACK] total_legend_codes_written={p5_total} meshes={len(mesh_objs)}")
